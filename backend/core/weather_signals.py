@@ -1,127 +1,142 @@
-"""Signal generator for weather temperature markets using ensemble forecasts."""
+"""Signal generator for Kalshi weather temperature markets using ensemble forecasts."""
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
 from backend.config import settings
-from backend.core.signals import calculate_edge, calculate_kelly_size
-from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
-from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
+from backend.data.weather import fetch_ensemble_forecast
+from backend.data.kalshi_markets import WeatherMarket, fetch_kalshi_weather_markets
 from backend.models.database import SessionLocal, Signal
 
 logger = logging.getLogger("trading_bot")
 
 
+# ---------------------------------------------------------------------------
+# Edge & Kelly helpers (no longer depend on the deleted signals.py)
+# ---------------------------------------------------------------------------
+
+def _calculate_edge(model_prob: float, market_prob: float):
+    """
+    Return (edge, direction) where direction is "yes" or "no".
+    Edge is positive — the magnitude of the opportunity.
+    """
+    if model_prob > market_prob:
+        return model_prob - market_prob, "yes"
+    else:
+        return market_prob - model_prob, "no"
+
+
+def _calculate_kelly_size(
+    edge: float,
+    model_prob: float,
+    entry_price: float,
+    bankroll: float,
+) -> float:
+    """
+    Fractional Kelly criterion for binary markets.
+    Payout = (1 - entry_price) / entry_price (i.e., if you buy YES at 60c, payout is 40c per 60c risked)
+    """
+    if entry_price <= 0 or entry_price >= 1:
+        return 0.0
+
+    b = (1.0 - entry_price) / entry_price  # net odds
+    q = 1.0 - model_prob
+    kelly_full = (model_prob * b - q) / b if b > 0 else 0.0
+    kelly_full = max(0.0, kelly_full)
+
+    raw = kelly_full * settings.KELLY_FRACTION * bankroll
+    return min(raw, settings.MAX_TRADE_SIZE)
+
+
+# ---------------------------------------------------------------------------
+# Signal dataclass
+# ---------------------------------------------------------------------------
+
 @dataclass
 class WeatherTradingSignal:
-    """A trading signal for a weather temperature market."""
     market: WeatherMarket
 
-    # Core signal data
-    model_probability: float = 0.5   # Ensemble probability of YES outcome
-    market_probability: float = 0.5  # Market's implied YES probability
+    model_probability: float = 0.5
+    market_probability: float = 0.5
     edge: float = 0.0
-    direction: str = "yes"           # "yes" or "no"
+    direction: str = "yes"
 
-    # Confidence and sizing
     confidence: float = 0.5
     kelly_fraction: float = 0.0
     suggested_size: float = 0.0
 
-    # Metadata
     sources: List[str] = field(default_factory=list)
     reasoning: str = ""
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
-    # Forecast context
     ensemble_mean: float = 0.0
     ensemble_std: float = 0.0
     ensemble_members: int = 0
 
     @property
     def passes_threshold(self) -> bool:
-        """Check if signal passes minimum edge threshold."""
-        return abs(self.edge) >= settings.WEATHER_MIN_EDGE_THRESHOLD
+        entry_price = self.market.yes_price if self.direction == "yes" else self.market.no_price
+        return (
+            abs(self.edge) >= settings.MIN_EDGE_THRESHOLD
+            and entry_price <= settings.MAX_ENTRY_PRICE
+        )
 
+
+# ---------------------------------------------------------------------------
+# Signal generation
+# ---------------------------------------------------------------------------
 
 async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
-    """
-    Generate a trading signal for a weather temperature market.
-
-    Uses ensemble forecast to estimate probability:
-    - Count fraction of ensemble members above/below the threshold
-    - Compare to market price to find edge
-    - Size using Kelly criterion
-    """
+    """Generate a trading signal for a single Kalshi weather market."""
     forecast = await fetch_ensemble_forecast(market.city_key, market.target_date)
     if not forecast or not forecast.member_highs:
         return None
 
-    # Calculate model probability based on market's question
-    if market.metric == "high":
-        if market.direction == "above":
-            model_yes_prob = forecast.probability_high_above(market.threshold_f)
-        else:
-            model_yes_prob = forecast.probability_high_below(market.threshold_f)
-    else:  # "low"
-        if market.direction == "above":
-            model_yes_prob = forecast.probability_low_above(market.threshold_f)
-        else:
-            model_yes_prob = forecast.probability_low_below(market.threshold_f)
+    if forecast.num_members < settings.MIN_ENSEMBLE_MEMBERS:
+        logger.debug(f"Too few ensemble members for {market.market_id}: {forecast.num_members} < {settings.MIN_ENSEMBLE_MEMBERS}")
+        return None
 
-    # Clip extreme probabilities (ensemble can be unanimous but don't bet 100%)
+    # Kalshi only has daily-high markets
+    members = forecast.member_highs
+    if market.direction == "above":
+        model_yes_prob = forecast.probability_high_above(market.threshold_f)
+    else:
+        model_yes_prob = forecast.probability_high_below(market.threshold_f)
+
+    # Clip — don't bet 100% even when ensemble is unanimous
     model_yes_prob = max(0.05, min(0.95, model_yes_prob))
-
     market_yes_prob = market.yes_price
 
-    # Use existing edge calculation (treats yes=up, no=down)
-    edge, direction_raw = calculate_edge(model_yes_prob, market_yes_prob)
-    direction = "yes" if direction_raw == "up" else "no"
-
-    # Entry price filter
+    edge, direction = _calculate_edge(model_yes_prob, market_yes_prob)
     entry_price = market.yes_price if direction == "yes" else market.no_price
-    if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
-        edge = 0.0  # Zero out but still return for UI visibility
 
-    # Confidence = ensemble agreement (how one-sided the members are)
-    if market.metric == "high":
-        members = forecast.member_highs
-    else:
-        members = forecast.member_lows
-
+    # Ensemble agreement (confidence proxy)
     above_count = sum(1 for m in members if m > market.threshold_f)
     agreement_frac = max(above_count, len(members) - above_count) / len(members)
     confidence = min(0.9, agreement_frac)
 
-    # Kelly sizing
     bankroll = settings.INITIAL_BANKROLL
-    suggested_size = calculate_kelly_size(
-        edge=abs(edge),
-        probability=model_yes_prob,
-        market_price=market_yes_prob,
-        direction=direction_raw,  # calculate_kelly_size expects "up"/"down"
-        bankroll=bankroll,
+    suggested_size = _calculate_kelly_size(edge, model_yes_prob, entry_price, bankroll)
+
+    mean_val = forecast.mean_high
+    std_val = forecast.std_high
+
+    actionable = (
+        abs(edge) >= settings.MIN_EDGE_THRESHOLD
+        and entry_price <= settings.MAX_ENTRY_PRICE
     )
-    suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
-
-    # Ensemble stats for display
-    mean_val = forecast.mean_high if market.metric == "high" else forecast.mean_low
-    std_val = forecast.std_high if market.metric == "high" else forecast.std_low
-
-    # Build reasoning
-    filter_status = "ACTIONABLE" if abs(edge) >= settings.WEATHER_MIN_EDGE_THRESHOLD else "FILTERED"
-    filter_notes = []
-    if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
-        filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
-    filter_note = f" [{', '.join(filter_notes)}]" if filter_notes else ""
+    status = "ACTIONABLE" if actionable else "FILTERED"
+    filter_note = ""
+    if entry_price > settings.MAX_ENTRY_PRICE:
+        filter_note = f" [entry {entry_price:.0%} > {settings.MAX_ENTRY_PRICE:.0%}]"
 
     reasoning = (
-        f"[{filter_status}]{filter_note} "
-        f"{market.city_name} {market.metric} {market.direction} {market.threshold_f:.0f}F on {market.target_date} | "
-        f"Ensemble: {mean_val:.1f}F +/- {std_val:.1f}F ({forecast.num_members} members) | "
+        f"[{status}]{filter_note} "
+        f"{market.city_name} high {market.direction} {market.threshold_f:.0f}F on {market.target_date} | "
+        f"Ensemble: {mean_val:.1f}F ±{std_val:.1f}F ({forecast.num_members} members) | "
         f"Model YES: {model_yes_prob:.0%} vs Market: {market_yes_prob:.0%} | "
-        f"Edge: {edge:+.1%} -> {direction.upper()} @ {entry_price:.0%} | "
+        f"Edge: {edge:+.1%} → {direction.upper()} @ {entry_price:.0%} | "
         f"Agreement: {agreement_frac:.0%}"
     )
 
@@ -143,66 +158,38 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
 
 
 async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
-    """
-    Scan weather markets and generate ensemble-based signals.
-    """
-    signals = []
-
+    """Fetch Kalshi markets, run ensemble signals, return sorted by edge."""
     city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
 
-    logger.info("=" * 50)
-    logger.info("WEATHER SCAN: Fetching temperature markets...")
+    logger.info("WEATHER SCAN: fetching Kalshi markets...")
+    markets = await fetch_kalshi_weather_markets(city_keys)
+    logger.info(f"Found {len(markets)} Kalshi weather markets")
 
-    markets = []
-
-    # Polymarket
-    try:
-        poly_markets = await fetch_polymarket_weather_markets(city_keys)
-        markets.extend(poly_markets)
-        logger.info(f"Polymarket: {len(poly_markets)} weather markets")
-    except Exception as e:
-        logger.error(f"Failed to fetch Polymarket weather markets: {e}")
-
-    # Kalshi
-    if settings.KALSHI_ENABLED:
-        try:
-            from backend.data.kalshi_client import kalshi_credentials_present
-            from backend.data.kalshi_markets import fetch_kalshi_weather_markets
-            if kalshi_credentials_present():
-                kalshi_markets = await fetch_kalshi_weather_markets(city_keys)
-                markets.extend(kalshi_markets)
-                logger.info(f"Kalshi: {len(kalshi_markets)} weather markets")
-        except Exception as e:
-            logger.error(f"Failed to fetch Kalshi weather markets: {e}")
-
-    logger.info(f"Found {len(markets)} total weather temperature markets")
-
+    signals: List[WeatherTradingSignal] = []
     for market in markets:
         try:
             signal = await generate_weather_signal(market)
             if signal:
                 signals.append(signal)
         except Exception as e:
-            logger.debug(f"Weather signal generation failed for {market.title}: {e}")
+            logger.debug(f"Signal generation failed for {market.title}: {e}")
 
-    # Sort by absolute edge
     signals.sort(key=lambda s: abs(s.edge), reverse=True)
 
     actionable = [s for s in signals if s.passes_threshold]
-    logger.info(f"WEATHER SCAN COMPLETE: {len(signals)} signals, {len(actionable)} actionable")
+    logger.info(f"SCAN COMPLETE: {len(signals)} signals, {len(actionable)} actionable")
+    for s in actionable[:5]:
+        logger.info(
+            f"  {s.market.city_name}: {s.market.direction} {s.market.threshold_f:.0f}F | "
+            f"Edge: {s.edge:+.1%} → {s.direction.upper()}"
+        )
 
-    for signal in actionable[:5]:
-        logger.info(f"  {signal.market.city_name}: {signal.market.metric} {signal.market.direction} "
-                     f"{signal.market.threshold_f:.0f}F | Edge: {signal.edge:+.1%}")
-
-    # Persist signals to DB
-    _persist_weather_signals(signals)
-
+    _persist_signals(signals)
     return signals
 
 
-def _persist_weather_signals(signals: list):
-    """Save weather signals to DB for calibration tracking."""
+def _persist_signals(signals: List[WeatherTradingSignal]):
+    """Save signals to DB for calibration tracking."""
     to_save = [s for s in signals if abs(s.edge) > 0]
     if not to_save:
         return
@@ -210,7 +197,6 @@ def _persist_weather_signals(signals: list):
     db = SessionLocal()
     try:
         for signal in to_save:
-            # Dedup: skip if already logged for this market
             existing = db.query(Signal).filter(
                 Signal.market_ticker == signal.market.market_id,
                 Signal.timestamp >= signal.timestamp.replace(second=0, microsecond=0),
@@ -218,10 +204,9 @@ def _persist_weather_signals(signals: list):
             if existing:
                 continue
 
-            db_signal = Signal(
+            db.add(Signal(
                 market_ticker=signal.market.market_id,
-                platform=signal.market.platform,
-                market_type="weather",
+                platform="kalshi",
                 timestamp=signal.timestamp,
                 direction=signal.direction,
                 model_probability=signal.model_probability,
@@ -233,12 +218,11 @@ def _persist_weather_signals(signals: list):
                 sources=signal.sources,
                 reasoning=signal.reasoning,
                 executed=False,
-            )
-            db.add(db_signal)
+            ))
 
         db.commit()
     except Exception as e:
-        logger.warning(f"Failed to persist weather signals: {e}")
+        logger.warning(f"Failed to persist signals: {e}")
         db.rollback()
     finally:
         db.close()

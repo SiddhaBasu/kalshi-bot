@@ -3,7 +3,6 @@ import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Trade } from '../types'
-import { platformStyles } from '../utils'
 
 interface Props {
   trades: Trade[]
@@ -112,8 +111,6 @@ export function TradesTable({ trades }: Props) {
           {sortedTrades.map((trade, i) => {
             const isPending = trade.result === 'pending'
             const isWin = trade.result === 'win'
-            const isUp = trade.direction === 'up'
-            const style = platformStyles[trade.platform?.toLowerCase()]
 
             return (
               <motion.tr
@@ -124,11 +121,7 @@ export function TradesTable({ trades }: Props) {
                 className="border-b border-neutral-800/50 hover:bg-neutral-800/30 text-[11px]"
               >
                 <td className="py-1 px-1.5">
-                  {style && (
-                    <span className={`platform-badge ${style.badge}`}>
-                      {style.icon}
-                    </span>
-                  )}
+                  <span className="text-[9px] font-bold text-cyan-500/70">K</span>
                 </td>
                 <td className="py-1 px-1.5">
                   <span className={`text-[9px] font-medium uppercase ${
@@ -138,12 +131,14 @@ export function TradesTable({ trades }: Props) {
                   </span>
                 </td>
                 <td className="py-1 px-1.5">
-                  <span className="text-neutral-400 truncate block max-w-[100px]" title={trade.event_slug || trade.market_ticker}>
-                    {(trade.event_slug || trade.market_ticker).replace('btc-updown-5m-', '')}
+                  <span className="text-neutral-400 truncate block max-w-[110px]" title={trade.market_ticker}>
+                    {trade.market_ticker}
                   </span>
                 </td>
                 <td className="py-1 px-1.5 text-center">
-                  <span className={`text-[10px] font-semibold uppercase ${isUp ? 'text-green-500' : 'text-red-500'}`}>
+                  <span className={`text-[10px] font-semibold uppercase ${
+                    trade.direction === 'yes' ? 'text-green-500' : 'text-red-500'
+                  }`}>
                     {trade.direction}
                   </span>
                 </td>

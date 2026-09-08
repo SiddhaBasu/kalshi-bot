@@ -1,6 +1,5 @@
 """Kalshi API client with RSA-PSS signature authentication."""
 import base64
-import hashlib
 import logging
 import time
 from pathlib import Path
@@ -24,27 +23,23 @@ class KalshiClient:
         self._private_key = None
 
     def _load_private_key(self):
-        """Load RSA private key from file (lazy, cached)."""
         if self._private_key is not None:
             return self._private_key
-
         key_path = settings.KALSHI_PRIVATE_KEY_PATH
         if not key_path:
             raise ValueError("KALSHI_PRIVATE_KEY_PATH not configured")
-
         pem_data = Path(key_path).expanduser().read_bytes()
         self._private_key = serialization.load_pem_private_key(pem_data, password=None)
         return self._private_key
 
     def _sign_request(self, method: str, path: str) -> Dict[str, str]:
         """
-        Generate auth headers for a Kalshi API request.
-
-        Signature = RSA-PSS-sign(timestamp_ms + METHOD + path)
-        where path = /trade-api/v2/... (no query params).
+        RSA-PSS sign: timestamp_ms + METHOD + /trade-api/v2<path>
+        Query params are NOT included in the signed string.
         """
         timestamp_ms = str(int(time.time() * 1000))
-        message = f"{timestamp_ms}{method.upper()}{path}"
+        full_path = f"/trade-api/v2{path}"
+        message = f"{timestamp_ms}{method.upper()}{full_path}"
 
         private_key = self._load_private_key()
         signature = private_key.sign(
@@ -64,35 +59,78 @@ class KalshiClient:
         }
 
     async def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> dict:
-        """
-        Authenticated GET request to Kalshi API.
-
-        Args:
-            path: API path after /trade-api/v2 (e.g., "/markets")
-            params: Query parameters (not included in signature)
-        """
-        full_path = f"/trade-api/v2{path}"
         url = f"{BASE_URL}{path}"
-        headers = self._sign_request("GET", full_path)
-
+        headers = self._sign_request("GET", path)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(url, headers=headers, params=params)
             response.raise_for_status()
             return response.json()
 
+    async def post(self, path: str, body: dict) -> dict:
+        url = f"{BASE_URL}{path}"
+        headers = self._sign_request("POST", path)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            return response.json()
+
     async def get_markets(self, params: Optional[Dict[str, Any]] = None) -> dict:
-        """Fetch markets with optional filters."""
         return await self.get("/markets", params=params)
 
     async def get_market(self, ticker: str) -> dict:
-        """Fetch a single market by ticker."""
         return await self.get(f"/markets/{ticker}")
 
     async def get_balance(self) -> dict:
-        """Get portfolio balance (useful for auth test)."""
         return await self.get("/portfolio/balance")
+
+    async def place_order(
+        self,
+        ticker: str,
+        side: str,          # "yes" or "no"
+        count: int,         # number of contracts (each = $1 max payout)
+        price_cents: int,   # limit price in cents (1–99)
+        client_order_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Place a limit order on Kalshi.
+
+        Args:
+            ticker: Market ticker e.g. "KXHIGHNY-26APR28-B72"
+            side: "yes" or "no"
+            count: Number of contracts. Each contract costs price_cents/100 dollars
+                   and pays $1 if you win. So `count` ≈ size_usd / (price_cents/100).
+            price_cents: Limit price in cents (1–99). Use yes_ask * 100 for yes side.
+            client_order_id: Optional idempotency key.
+
+        Returns:
+            Kalshi order response dict (contains "order" key with order_id, status, etc.)
+        """
+        body: dict = {
+            "ticker": ticker,
+            "action": "buy",
+            "side": side,
+            "count": count,
+            "type": "limit",
+        }
+        if side == "yes":
+            body["yes_price"] = price_cents
+        else:
+            body["no_price"] = price_cents
+
+        if client_order_id:
+            body["client_order_id"] = client_order_id
+
+        logger.info(
+            f"Placing Kalshi order: {ticker} {side.upper()} x{count} @ {price_cents}c"
+        )
+        return await self.post("/portfolio/orders", body)
+
+    async def cancel_order(self, order_id: str) -> dict:
+        return await self.post(f"/portfolio/orders/{order_id}/decrease", {"reduce_by": 999999})
+
+    async def get_order(self, order_id: str) -> dict:
+        return await self.get(f"/portfolio/orders/{order_id}")
 
 
 def kalshi_credentials_present() -> bool:
-    """Check if Kalshi API credentials are configured."""
     return bool(settings.KALSHI_API_KEY_ID and settings.KALSHI_PRIVATE_KEY_PATH)

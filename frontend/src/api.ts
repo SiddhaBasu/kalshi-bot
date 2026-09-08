@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DashboardData, Signal, Trade, BotStats, BtcPrice, BtcWindow, WeatherForecast, WeatherSignal } from './types'
+import type { DashboardData, Trade, BotStats, WeatherForecast, WeatherSignal, BacktestData, WhaleTrade, WhaleStats } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -12,18 +12,8 @@ export async function fetchDashboard(): Promise<DashboardData> {
   return data
 }
 
-export async function fetchSignals(): Promise<Signal[]> {
-  const { data } = await api.get<Signal[]>('/signals')
-  return data
-}
-
-export async function fetchBtcPrice(): Promise<BtcPrice | null> {
-  const { data } = await api.get<BtcPrice | null>('/btc/price')
-  return data
-}
-
-export async function fetchBtcWindows(): Promise<BtcWindow[]> {
-  const { data } = await api.get<BtcWindow[]>('/btc/windows')
+export async function fetchStats(): Promise<BotStats> {
+  const { data } = await api.get<BotStats>('/stats')
   return data
 }
 
@@ -32,20 +22,18 @@ export async function fetchTrades(): Promise<Trade[]> {
   return data
 }
 
-export async function fetchStats(): Promise<BotStats> {
-  const { data } = await api.get<BotStats>('/stats')
+export async function fetchWeatherForecasts(): Promise<WeatherForecast[]> {
+  const { data } = await api.get<WeatherForecast[]>('/weather/forecasts')
   return data
 }
 
-export async function runScan(): Promise<{ total_signals: number; actionable_signals: number }> {
+export async function fetchWeatherSignals(): Promise<WeatherSignal[]> {
+  const { data } = await api.get<WeatherSignal[]>('/weather/signals')
+  return data
+}
+
+export async function runScan(): Promise<{ status: string; timestamp: string }> {
   const { data } = await api.post('/run-scan')
-  return data
-}
-
-export async function simulateTrade(ticker: string): Promise<{ trade_id: number; size: number }> {
-  const { data } = await api.post('/simulate-trade', null, {
-    params: { signal_ticker: ticker }
-  })
   return data
 }
 
@@ -59,22 +47,32 @@ export async function stopBot(): Promise<{ status: string; is_running: boolean }
   return data
 }
 
-export async function settleTradesApi(): Promise<{ settled_count: number }> {
-  const { data } = await api.post('/settle-trades')
-  return data
-}
-
 export async function resetBot(): Promise<{ status: string; trades_deleted: number; new_bankroll: number }> {
   const { data } = await api.post('/bot/reset')
   return data
 }
 
-export async function fetchWeatherForecasts(): Promise<WeatherForecast[]> {
-  const { data } = await api.get<WeatherForecast[]>('/weather/forecasts')
+export async function settleTradesApi(): Promise<{ settled_count: number }> {
+  const { data } = await api.post('/settle-trades')
   return data
 }
 
-export async function fetchWeatherSignals(): Promise<WeatherSignal[]> {
-  const { data } = await api.get<WeatherSignal[]>('/weather/signals')
+export async function fetchBacktest(lookbackDays = 365): Promise<BacktestData> {
+  const { data } = await api.get<BacktestData>('/backtest/nyc', { params: { lookback_days: lookbackDays } })
+  return data
+}
+
+export async function fetchWhales(minUsd = 0, limit = 200): Promise<WhaleTrade[]> {
+  const { data } = await api.get<WhaleTrade[]>('/whales', { params: { min_usd: minUsd, limit } })
+  return data
+}
+
+export async function fetchWhaleStats(): Promise<WhaleStats> {
+  const { data } = await api.get<WhaleStats>('/whales/stats')
+  return data
+}
+
+export async function runWhaleScan(): Promise<{ status: string; timestamp: string }> {
+  const { data } = await api.post('/whales/scan')
   return data
 }

@@ -1,15 +1,15 @@
-"""Kalshi weather temperature market fetcher."""
+"""Kalshi weather temperature market fetcher and types."""
 import logging
 import re
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date
 from typing import Dict, List, Optional
 
 from backend.data.kalshi_client import KalshiClient, kalshi_credentials_present
-from backend.data.weather_markets import WeatherMarket
 
 logger = logging.getLogger("trading_bot")
 
-# Kalshi series tickers for high-temperature markets by city
+# Kalshi KXHIGH series tickers by city key
 CITY_SERIES: Dict[str, str] = {
     "nyc": "KXHIGHNY",
     "chicago": "KXHIGHCHI",
@@ -26,23 +26,38 @@ CITY_NAMES: Dict[str, str] = {
     "denver": "Denver",
 }
 
-# Month abbreviation mapping for ticker parsing
 MONTH_ABBR = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
     "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
 }
 
 
-def _parse_kalshi_ticker(ticker: str, city_key: str) -> Optional[dict]:
+@dataclass
+class WeatherMarket:
+    """A Kalshi weather temperature prediction market."""
+    slug: str
+    market_id: str          # Kalshi ticker e.g. KXHIGHNY-26APR28-B72
+    platform: str           # always "kalshi"
+    title: str
+    city_key: str
+    city_name: str
+    target_date: date
+    threshold_f: float      # Temperature threshold in Fahrenheit
+    metric: str             # "high" (Kalshi only supports daily high)
+    direction: str          # "above" (B-bracket) or "below" (T-bracket)
+    yes_price: float        # 0–1
+    no_price: float         # 0–1
+    volume: float = 0.0
+
+
+def _parse_kalshi_ticker(ticker: str) -> Optional[dict]:
     """
     Parse a Kalshi bracket ticker into market parameters.
 
-    Format: KXHIGHNY-26MAR01-B45.5
-      - 26MAR01 = 2026-03-01
-      - B45.5 = bracket boundary at 45.5°F (above)
-      - T45.5 would be "at or below" (top boundary)
+    Format examples:
+      KXHIGHNY-26APR28-B72     → above 72°F on 2026-04-28
+      KXHIGHMIA-26MAY01-T80    → below 80°F on 2026-05-01
     """
-    # Match: SERIES-YYMONDD-B/Tnn.n
     match = re.match(
         r'^[A-Z]+-(\d{2})([A-Z]{3})(\d{2})-([BT])([\d.]+)$',
         ticker,
@@ -50,49 +65,38 @@ def _parse_kalshi_ticker(ticker: str, city_key: str) -> Optional[dict]:
     if not match:
         return None
 
-    yy = int(match.group(1))
-    mon_str = match.group(2)
-    dd = int(match.group(3))
-    boundary_type = match.group(4)
-    threshold = float(match.group(5))
+    yy, mon_str, dd = int(match.group(1)), match.group(2), int(match.group(3))
+    boundary_type, threshold = match.group(4), float(match.group(5))
 
     month = MONTH_ABBR.get(mon_str)
     if not month:
         return None
 
-    year = 2000 + yy
     try:
-        target_date = date(year, month, dd)
+        target_date = date(2000 + yy, month, dd)
     except ValueError:
         return None
 
-    # B = bottom boundary → "above" threshold; T = top boundary → "below" threshold
+    # B = bottom boundary → YES means "above"; T = top boundary → YES means "below"
     direction = "above" if boundary_type == "B" else "below"
 
-    return {
-        "target_date": target_date,
-        "threshold_f": threshold,
-        "metric": "high",
-        "direction": direction,
-    }
+    return {"target_date": target_date, "threshold_f": threshold, "direction": direction}
 
 
 async def fetch_kalshi_weather_markets(
     city_keys: Optional[List[str]] = None,
 ) -> List[WeatherMarket]:
     """
-    Fetch open weather temperature markets from Kalshi.
-
-    Queries the KXHIGH{city} series for each configured city,
-    handles cursor-based pagination, and returns WeatherMarket objects.
+    Fetch open weather temperature markets from Kalshi for the given cities.
+    Handles cursor-based pagination.
     """
     if not kalshi_credentials_present():
+        logger.warning("Kalshi credentials not set — skipping market fetch")
         return []
 
     client = KalshiClient()
     markets: List[WeatherMarket] = []
     today = date.today()
-
     cities = city_keys or list(CITY_SERIES.keys())
 
     for city_key in cities:
@@ -105,11 +109,7 @@ async def fetch_kalshi_weather_markets(
 
         try:
             while True:
-                params = {
-                    "series_ticker": series,
-                    "status": "open",
-                    "limit": 200,
-                }
+                params: dict = {"series_ticker": series, "status": "open", "limit": 200}
                 if cursor:
                     params["cursor"] = cursor
 
@@ -118,27 +118,21 @@ async def fetch_kalshi_weather_markets(
 
                 for m in raw_markets:
                     ticker = m.get("ticker", "")
-                    parsed = _parse_kalshi_ticker(ticker, city_key)
-                    if not parsed:
-                        continue
-
-                    if parsed["target_date"] < today:
+                    parsed = _parse_kalshi_ticker(ticker)
+                    if not parsed or parsed["target_date"] < today:
                         continue
 
                     yes_price = (m.get("yes_ask") or 0) / 100.0
                     no_price = (m.get("no_ask") or 0) / 100.0
 
-                    # Fallback to last/mid prices
                     if yes_price <= 0:
                         yes_price = (m.get("last_price") or 50) / 100.0
                     if no_price <= 0:
                         no_price = 1.0 - yes_price
 
-                    # Skip fully resolved or illiquid
+                    # Skip resolved or illiquid
                     if yes_price > 0.98 or yes_price < 0.02:
                         continue
-
-                    volume = float(m.get("volume", 0) or 0)
 
                     markets.append(WeatherMarket(
                         slug=ticker,
@@ -149,14 +143,13 @@ async def fetch_kalshi_weather_markets(
                         city_name=city_name,
                         target_date=parsed["target_date"],
                         threshold_f=parsed["threshold_f"],
-                        metric=parsed["metric"],
+                        metric="high",
                         direction=parsed["direction"],
                         yes_price=yes_price,
                         no_price=no_price,
-                        volume=volume,
+                        volume=float(m.get("volume", 0) or 0),
                     ))
 
-                # Handle pagination
                 cursor = data.get("cursor")
                 if not cursor or not raw_markets:
                     break
@@ -164,5 +157,5 @@ async def fetch_kalshi_weather_markets(
         except Exception as e:
             logger.warning(f"Failed to fetch Kalshi markets for {city_key} ({series}): {e}")
 
-    logger.info(f"Found {len(markets)} Kalshi weather markets")
+    logger.info(f"Found {len(markets)} Kalshi weather markets across {len(cities)} cities")
     return markets
