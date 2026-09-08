@@ -1,91 +1,180 @@
-import { useState, useEffect, Suspense, lazy } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { fetchDashboard, runScan, simulateTrade, startBot, stopBot } from './api'
-import { StatsCards } from './components/StatsCards'
-import { SignalsTable } from './components/SignalsTable'
-import { TradesTable } from './components/TradesTable'
+import { fetchDashboard, runScan, startBot, stopBot } from './api'
 import { EquityChart } from './components/EquityChart'
-import { Terminal } from './components/Terminal'
-import { MicrostructurePanel } from './components/MicrostructurePanel'
 import { CalibrationPanel } from './components/CalibrationPanel'
-import { WeatherPanel } from './components/WeatherPanel'
-import { EdgeDistribution } from './components/EdgeDistribution'
-import { formatCountdown } from './utils'
-import type { BtcWindow } from './types'
+import { Terminal } from './components/Terminal'
+import { TradesTable } from './components/TradesTable'
+import { BacktestPanel } from './components/BacktestPanel'
+import { WhaleScannerPanel } from './components/WhaleScannerPanel'
+import type { WeatherSignal, WeatherForecast } from './types'
 
-const GlobeView = lazy(() => import('./components/GlobeView').then(m => ({ default: m.GlobeView })))
+type View = 'dashboard' | 'backtest' | 'whales'
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 function LiveClock() {
   const [time, setTime] = useState(new Date())
   useEffect(() => {
-    const interval = setInterval(() => setTime(new Date()), 1000)
-    return () => clearInterval(interval)
+    const id = setInterval(() => setTime(new Date()), 1000)
+    return () => clearInterval(id)
   }, [])
   return (
-    <span className="text-xs tabular-nums text-neutral-400">
-      {time.toLocaleTimeString('en-US', { hour12: false })}
+    <span className="text-xs tabular-nums text-neutral-400 font-mono">
+      {time.toUTCString().slice(17, 25)} UTC
     </span>
-  )
-}
-
-function WindowPill({ window: w }: { window: BtcWindow }) {
-  const [countdown, setCountdown] = useState(w.time_until_end)
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCountdown(prev => Math.max(0, prev - 1))
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [w.time_until_end])
-
-  return (
-    <div className={`flex items-center gap-2 px-2 py-1 border shrink-0 ${w.is_active ? 'border-amber-500/30 bg-amber-500/5' : 'border-neutral-800 bg-neutral-900/50'}`}>
-      {w.is_active && <span className="text-[9px] font-bold text-amber-400 uppercase">Live</span>}
-      {w.is_upcoming && <span className="text-[9px] font-medium text-blue-400 uppercase">Next</span>}
-      <span className="text-[10px] tabular-nums text-green-400">{(w.up_price * 100).toFixed(0)}c</span>
-      <span className="text-neutral-600 text-[10px]">/</span>
-      <span className="text-[10px] tabular-nums text-red-400">{(w.down_price * 100).toFixed(0)}c</span>
-      <span className="text-[10px] tabular-nums text-neutral-500">{formatCountdown(countdown)}</span>
-    </div>
   )
 }
 
 function RefreshBar({ interval }: { interval: number }) {
   const [progress, setProgress] = useState(100)
-
   useEffect(() => {
     setProgress(100)
     const step = 100 / (interval / 1000)
-    const timer = setInterval(() => {
-      setProgress(p => Math.max(0, p - step))
-    }, 1000)
-    return () => clearInterval(timer)
+    const id = setInterval(() => setProgress(p => Math.max(0, p - step)), 1000)
+    return () => clearInterval(id)
   }, [interval])
-
   return (
-    <div className="refresh-bar w-16">
-      <div className="refresh-fill" style={{ width: `${progress}%` }} />
+    <div className="h-0.5 w-16 bg-neutral-800 rounded overflow-hidden">
+      <div className="h-full bg-green-600 transition-all" style={{ width: `${progress}%` }} />
     </div>
   )
 }
 
+function EdgeBar({ edge, actionable }: { edge: number; actionable: boolean }) {
+  const pct = Math.min(100, Math.abs(edge) * 500)
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="h-1 w-16 bg-neutral-800 rounded overflow-hidden">
+        <div
+          className={`h-full rounded ${actionable ? 'bg-green-500' : 'bg-neutral-600'}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className={`text-[10px] tabular-nums font-mono ${actionable ? 'text-green-400' : 'text-neutral-500'}`}>
+        {edge >= 0 ? '+' : ''}{(edge * 100).toFixed(1)}%
+      </span>
+    </div>
+  )
+}
+
+// ── signals table ─────────────────────────────────────────────────────────────
+
+function SignalsPanel({ signals }: { signals: WeatherSignal[] }) {
+  if (signals.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-[11px] text-neutral-600 uppercase tracking-wider">
+        No signals — waiting for next scan
+      </div>
+    )
+  }
+  return (
+    <div className="overflow-auto h-full">
+      <table className="w-full text-[11px] font-mono">
+        <thead className="sticky top-0 bg-neutral-950 border-b border-neutral-800">
+          <tr className="text-neutral-500 uppercase tracking-wider">
+            <th className="text-left px-3 py-1.5">City</th>
+            <th className="text-left px-2 py-1.5">Date</th>
+            <th className="text-left px-2 py-1.5">Question</th>
+            <th className="text-right px-2 py-1.5">Model</th>
+            <th className="text-right px-2 py-1.5">Market</th>
+            <th className="text-left px-2 py-1.5">Edge</th>
+            <th className="text-right px-2 py-1.5">Size</th>
+            <th className="text-center px-2 py-1.5">Trade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {signals.map((s, i) => (
+            <tr
+              key={s.market_id}
+              className={`border-b border-neutral-900 ${
+                s.actionable ? 'bg-green-950/20 hover:bg-green-950/30' : 'hover:bg-neutral-900/30'
+              } transition-colors`}
+            >
+              <td className="px-3 py-1.5 text-neutral-200 font-semibold whitespace-nowrap">
+                {s.city_name}
+              </td>
+              <td className="px-2 py-1.5 text-neutral-400">
+                {s.target_date.slice(5)}
+              </td>
+              <td className="px-2 py-1.5 text-neutral-300 whitespace-nowrap">
+                High {s.direction} {s.threshold_f.toFixed(0)}°F
+              </td>
+              <td className="px-2 py-1.5 text-right text-cyan-400 tabular-nums">
+                {(s.model_probability * 100).toFixed(0)}%
+              </td>
+              <td className="px-2 py-1.5 text-right text-neutral-400 tabular-nums">
+                {(s.market_probability * 100).toFixed(0)}%
+              </td>
+              <td className="px-2 py-1.5">
+                <EdgeBar edge={s.edge} actionable={s.actionable} />
+              </td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-neutral-300">
+                ${s.suggested_size.toFixed(0)}
+              </td>
+              <td className="px-2 py-1.5 text-center">
+                {s.actionable ? (
+                  <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-green-500/15 text-green-400 border border-green-500/30 rounded">
+                    {s.trade_direction.toUpperCase()}
+                  </span>
+                ) : (
+                  <span className="text-[9px] text-neutral-700">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ── forecast cards ────────────────────────────────────────────────────────────
+
+function ForecastCard({ f }: { f: WeatherForecast }) {
+  const agreement = Math.round(f.ensemble_agreement * 100)
+  const agreementColor = agreement >= 80 ? 'text-green-400' : agreement >= 65 ? 'text-amber-400' : 'text-neutral-500'
+  return (
+    <div className="border border-neutral-800 bg-neutral-900/40 p-3 rounded-sm">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-semibold text-neutral-200">{f.city_name}</span>
+        <span className="text-[9px] text-neutral-600">{f.target_date.slice(5)}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-[10px]">
+        <div>
+          <div className="text-neutral-500 uppercase tracking-wider mb-0.5">High</div>
+          <div className="text-white tabular-nums font-mono font-semibold">
+            {f.mean_high.toFixed(1)}°F
+          </div>
+          <div className="text-neutral-600 tabular-nums">±{f.std_high.toFixed(1)}°</div>
+        </div>
+        <div>
+          <div className="text-neutral-500 uppercase tracking-wider mb-0.5">Agreement</div>
+          <div className={`tabular-nums font-mono font-semibold ${agreementColor}`}>
+            {agreement}%
+          </div>
+          <div className="text-neutral-600">{f.num_members} members</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── main app ──────────────────────────────────────────────────────────────────
+
 function App() {
+  const [view, setView] = useState<View>('dashboard')
   const queryClient = useQueryClient()
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
-    refetchInterval: 10000,
+    refetchInterval: 15000,
   })
 
   const scanMutation = useMutation({
     mutationFn: runScan,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-  })
-
-  const tradeMutation = useMutation({
-    mutationFn: simulateTrade,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
   })
 
@@ -99,37 +188,15 @@ function App() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
   })
 
-  const activeSignals = data?.active_signals ?? []
-  const recentTrades = data?.recent_trades ?? []
-  const btcPrice = data?.btc_price
-  const micro = data?.microstructure
-  const windows = data?.windows ?? []
-  const weatherSignals = data?.weather_signals ?? []
-  const weatherForecasts = data?.weather_forecasts ?? []
-
-  const stats = data?.stats ?? {
-    is_running: false,
-    last_run: null,
-    total_trades: 0,
-    total_pnl: 0,
-    bankroll: 10000,
-    winning_trades: 0,
-    win_rate: 0
-  }
-  const equityCurve = data?.equity_curve ?? []
-  const calibration = data?.calibration ?? null
-
-  const actionableCount = activeSignals.filter(s => s.actionable).length + weatherSignals.filter(s => s.actionable).length
-
   if (isLoading) {
     return (
       <div className="h-screen bg-black flex items-center justify-center">
         <div className="text-center">
-          <div className="relative w-10 h-10 mx-auto mb-4">
-            <div className="absolute inset-0 border-2 border-neutral-800 rounded-full" />
-            <div className="absolute inset-0 border-2 border-transparent border-t-green-500 rounded-full animate-spin" />
+          <div className="relative w-8 h-8 mx-auto mb-4">
+            <div className="absolute inset-0 border border-neutral-800 rounded-full" />
+            <div className="absolute inset-0 border border-transparent border-t-green-500 rounded-full animate-spin" />
           </div>
-          <div className="text-[10px] text-neutral-500 uppercase tracking-widest font-mono">Initializing</div>
+          <div className="text-[10px] text-neutral-600 uppercase tracking-widest font-mono">Connecting</div>
         </div>
       </div>
     )
@@ -138,8 +205,8 @@ function App() {
   if (error || !data) {
     return (
       <div className="h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-red-500 text-xs uppercase mb-2 tracking-wider">Connection Error</div>
+        <div className="text-center space-y-3">
+          <div className="text-red-500 text-xs uppercase tracking-wider">Backend Offline</div>
           <button
             onClick={() => refetch()}
             className="px-3 py-1.5 bg-neutral-900 border border-neutral-700 text-neutral-300 text-xs uppercase tracking-wider"
@@ -151,108 +218,195 @@ function App() {
     )
   }
 
-  return (
-    <div className="h-screen bg-black text-neutral-200 flex flex-col overflow-hidden">
-      {/* ===== HEADER ===== */}
-      <motion.header
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="shrink-0 border-b border-neutral-800 px-3 py-1.5 flex items-center gap-4 relative"
-      >
-        <div className="scan-line" />
+  const stats = data.stats
+  const signals = data.weather_signals ?? []
+  const forecasts = data.weather_forecasts ?? []
+  const actionableCount = signals.filter(s => s.actionable).length
+  const isLive = !stats.simulation_mode
+  const kalshiOk = data.kalshi_status?.connected
 
+  return (
+    <div className="h-screen bg-black text-neutral-200 flex flex-col overflow-hidden font-mono">
+
+      {/* ── HEADER ── */}
+      <motion.header
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="shrink-0 border-b border-neutral-800 px-4 py-2 flex items-center gap-4"
+      >
         <div className="flex items-center gap-2 shrink-0">
-          <h1 className="text-xs font-bold text-neutral-100 uppercase tracking-widest whitespace-nowrap font-mono">
-            TRADING TERMINAL
+          <h1 className="text-xs font-bold uppercase tracking-widest text-neutral-100">
+            Kalshi Weather
           </h1>
-          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+          {/* Run state */}
+          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase border ${
             stats.is_running
-              ? 'bg-green-500/10 text-green-500 border border-green-500/20'
-              : 'bg-neutral-800 text-neutral-500 border border-neutral-700'
+              ? 'bg-green-500/10 text-green-500 border-green-500/20'
+              : 'bg-neutral-800 text-neutral-500 border-neutral-700'
           }`}>
-            {stats.is_running ? 'Live' : 'Idle'}
+            {stats.is_running ? 'Running' : 'Idle'}
           </span>
-          <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            Sim
+          {/* Live vs Sim */}
+          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase border ${
+            isLive
+              ? 'bg-red-500/10 text-red-400 border-red-500/20'
+              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+          }`}>
+            {isLive ? 'Live' : 'Sim'}
+          </span>
+          {/* Kalshi connection */}
+          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase border ${
+            kalshiOk
+              ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+              : 'bg-neutral-800 text-neutral-600 border-neutral-700'
+          }`}>
+            {kalshiOk ? 'Kalshi ✓' : 'Kalshi —'}
           </span>
         </div>
 
-        {btcPrice && (
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-sm font-bold tabular-nums text-neutral-100">
-              ${btcPrice.price.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </span>
-            <span className={`text-[10px] tabular-nums ${btcPrice.change_24h >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {btcPrice.change_24h >= 0 ? '+' : ''}{btcPrice.change_24h.toFixed(2)}%
+        {/* Stats strip */}
+        <div className="flex items-center gap-5 text-[11px]">
+          <div>
+            <span className="text-neutral-600 mr-1">Bankroll</span>
+            <span className="text-neutral-100 tabular-nums">${stats.bankroll.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+          </div>
+          <div>
+            <span className="text-neutral-600 mr-1">P&L</span>
+            <span className={`tabular-nums ${stats.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(0)}
             </span>
           </div>
-        )}
+          <div>
+            <span className="text-neutral-600 mr-1">Win rate</span>
+            <span className="text-neutral-200 tabular-nums">{(stats.win_rate * 100).toFixed(0)}%</span>
+          </div>
+          <div>
+            <span className="text-neutral-600 mr-1">Trades</span>
+            <span className="text-neutral-200 tabular-nums">{stats.total_trades}</span>
+          </div>
+          <div>
+            <span className="text-amber-400 tabular-nums">{actionableCount} actionable</span>
+          </div>
+        </div>
 
         <div className="flex-1" />
 
-        <StatsCards stats={stats} />
+        <div className="flex items-center gap-3 shrink-0">
+          {/* view tabs */}
+          <div className="flex items-center border border-neutral-800 rounded-sm overflow-hidden">
+            <button
+              onClick={() => setView('dashboard')}
+              className={`px-2.5 py-1 text-[9px] uppercase tracking-wider transition-colors ${
+                view === 'dashboard'
+                  ? 'bg-neutral-800 text-neutral-200'
+                  : 'text-neutral-600 hover:text-neutral-400'
+              }`}
+            >
+              Dashboard
+            </button>
+            <button
+              onClick={() => setView('backtest')}
+              className={`px-2.5 py-1 text-[9px] uppercase tracking-wider transition-colors border-l border-neutral-800 ${
+                view === 'backtest'
+                  ? 'bg-neutral-800 text-cyan-400'
+                  : 'text-neutral-600 hover:text-neutral-400'
+              }`}
+            >
+              Backtest
+            </button>
+            <button
+              onClick={() => setView('whales')}
+              className={`px-2.5 py-1 text-[9px] uppercase tracking-wider transition-colors border-l border-neutral-800 ${
+                view === 'whales'
+                  ? 'bg-neutral-800 text-amber-400'
+                  : 'text-neutral-600 hover:text-neutral-400'
+              }`}
+            >
+              Whales
+            </button>
+          </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => scanMutation.mutate()}
-            disabled={scanMutation.isPending}
-            className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-600 text-neutral-300 text-[10px] uppercase tracking-wider transition-colors disabled:opacity-50 whitespace-nowrap"
-          >
-            {scanMutation.isPending ? 'Scanning...' : 'Scan'}
-          </button>
+          {view === 'dashboard' && (
+            <>
+              <button
+                onClick={() => stats.is_running ? stopMutation.mutate() : startMutation.mutate()}
+                className={`px-2.5 py-1 border text-[10px] uppercase tracking-wider transition-colors ${
+                  stats.is_running
+                    ? 'border-red-800 text-red-400 hover:border-red-600'
+                    : 'border-green-800 text-green-400 hover:border-green-600'
+                }`}
+              >
+                {stats.is_running ? 'Stop' : 'Start'}
+              </button>
+              <button
+                onClick={() => scanMutation.mutate()}
+                disabled={scanMutation.isPending}
+                className="px-2.5 py-1 bg-neutral-900 border border-neutral-700 hover:border-neutral-500 text-neutral-300 text-[10px] uppercase tracking-wider transition-colors disabled:opacity-40"
+              >
+                {scanMutation.isPending ? 'Scanning…' : 'Scan'}
+              </button>
+              <RefreshBar interval={15000} />
+            </>
+          )}
           <LiveClock />
         </div>
       </motion.header>
 
-      {/* ===== MAIN GRID ===== */}
-      <div className="flex-1 min-h-0 grid grid-cols-[300px_1fr_340px] grid-rows-[1fr] gap-0">
+      {/* ── BACKTEST VIEW ── */}
+      {view === 'backtest' && (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <BacktestPanel />
+        </div>
+      )}
 
-        {/* ===== LEFT COLUMN ===== */}
-        <div className="flex flex-col border-r border-neutral-800 min-h-0 overflow-hidden">
-          {/* Microstructure */}
-          {micro && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="shrink-0 border-b border-neutral-800 px-2 py-2"
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Microstructure</span>
-                <span className="text-[9px] text-neutral-600 tabular-nums">{micro.source}</span>
-              </div>
-              <MicrostructurePanel micro={micro} />
-            </motion.div>
-          )}
+      {/* ── WHALE SCANNER VIEW ── */}
+      {view === 'whales' && (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <WhaleScannerPanel />
+        </div>
+      )}
 
-          {/* Equity chart */}
-          <div className="border-b border-neutral-800" style={{ height: '28%', minHeight: '120px' }}>
-            <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
+      {/* ── MAIN GRID ── */}
+      {/* Left 280px | Center flex-1 | Right 300px */}
+      {view === 'dashboard' && <div className="flex-1 min-h-0 grid grid-cols-[280px_1fr_300px]">
+
+        {/* ── LEFT: equity + calibration + terminal ── */}
+        <div className="flex flex-col border-r border-neutral-800 min-h-0">
+          {/* Equity */}
+          <div className="border-b border-neutral-800" style={{ height: '30%', minHeight: 120 }}>
+            <div className="px-3 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
               <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Equity</span>
               <span className={`text-[10px] tabular-nums ${stats.total_pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                 {stats.total_pnl >= 0 ? '+' : ''}${stats.total_pnl.toFixed(0)}
               </span>
             </div>
-            <div className="h-[calc(100%-24px)] p-1">
-              <EquityChart data={equityCurve} initialBankroll={stats.bankroll - stats.total_pnl} />
+            <div className="h-[calc(100%-28px)] p-1">
+              <EquityChart data={data.equity_curve} initialBankroll={stats.bankroll - stats.total_pnl} />
             </div>
           </div>
 
           {/* Calibration */}
-          {calibration && calibration.total_with_outcome > 0 && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="shrink-0 border-b border-neutral-800 px-2 py-2"
-            >
+          {data.calibration && data.calibration.total_with_outcome > 0 && (
+            <div className="shrink-0 border-b border-neutral-800 px-3 py-2">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Calibration</span>
-                <span className="text-[9px] text-neutral-600 tabular-nums">{calibration.total_with_outcome} settled</span>
+                <span className="text-[9px] text-neutral-600">{data.calibration.total_with_outcome} settled</span>
               </div>
-              <CalibrationPanel calibration={calibration} />
-            </motion.div>
+              <div className="grid grid-cols-2 gap-x-4 text-[10px] mb-1.5">
+                <div>
+                  <span className="text-neutral-600">Accuracy </span>
+                  <span className="text-neutral-200 tabular-nums">{(data.calibration.accuracy * 100).toFixed(0)}%</span>
+                </div>
+                <div>
+                  <span className="text-neutral-600">Brier </span>
+                  <span className="text-neutral-200 tabular-nums">{data.calibration.brier_score.toFixed(3)}</span>
+                </div>
+              </div>
+              <CalibrationPanel calibration={data.calibration} />
+            </div>
           )}
 
-          {/* Terminal fills remaining */}
+          {/* Terminal fills rest */}
           <div className="flex-1 min-h-0">
             <Terminal
               isRunning={stats.is_running}
@@ -265,116 +419,64 @@ function App() {
           </div>
         </div>
 
-        {/* ===== CENTER COLUMN ===== */}
+        {/* ── CENTER: signals table ── */}
         <div className="flex flex-col min-h-0 border-r border-neutral-800">
-          {/* Globe - top 60% */}
-          <div className="relative" style={{ height: '58%' }}>
-            <div className="absolute inset-0">
-              <Suspense fallback={
-                <div className="w-full h-full flex items-center justify-center bg-black">
-                  <span className="text-[10px] text-neutral-600 uppercase tracking-wider">Loading Globe...</span>
-                </div>
-              }>
-                <GlobeView forecasts={weatherForecasts} signals={weatherSignals} />
-              </Suspense>
-            </div>
-            {/* Globe overlay: actionable count */}
-            <div className="absolute top-2 left-2 z-10">
-              <div className="px-2 py-1 bg-black/80 border border-neutral-800 text-[10px]">
-                <span className="text-neutral-500 uppercase tracking-wider mr-2">Markets</span>
-                <span className="text-amber-500 tabular-nums">{actionableCount} actionable</span>
-              </div>
+          <div className="shrink-0 px-3 py-1.5 border-b border-neutral-800 flex items-center justify-between">
+            <span className="text-[10px] text-neutral-500 uppercase tracking-wider">
+              Kalshi Signals
+            </span>
+            <div className="flex items-center gap-3 text-[10px]">
+              <span className="text-neutral-600">{signals.length} markets</span>
+              <span className="text-green-400">{actionableCount} actionable</span>
             </div>
           </div>
-
-          {/* Bottom panels - 3 side by side */}
-          <div className="flex-1 min-h-0 grid grid-cols-3 border-t border-neutral-800">
-            {/* Edge Distribution */}
-            <div className="border-r border-neutral-800 flex flex-col min-h-0">
-              <div className="px-2 py-1 border-b border-neutral-800 shrink-0">
-                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Edge Distribution</span>
-              </div>
-              <div className="flex-1 min-h-0 p-1">
-                <EdgeDistribution btcSignals={activeSignals} weatherSignals={weatherSignals} />
-              </div>
-            </div>
-
-            {/* BTC Windows */}
-            <div className="border-r border-neutral-800 flex flex-col min-h-0">
-              <div className="px-2 py-1 border-b border-neutral-800 shrink-0">
-                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">BTC Windows</span>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto p-1 space-y-1">
-                {windows.length > 0 ? (
-                  windows.slice(0, 10).map(w => (
-                    <WindowPill key={w.slug} window={w} />
-                  ))
-                ) : (
-                  <div className="text-[10px] text-neutral-600 p-2">No active windows</div>
-                )}
-              </div>
-            </div>
-
-            {/* Weather Forecasts */}
-            <div className="flex flex-col min-h-0">
-              <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
-                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Weather</span>
-                <span className="px-1 py-0.5 text-[8px] font-bold uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">WX</span>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto">
-                <WeatherPanel forecasts={weatherForecasts} signals={weatherSignals} />
-              </div>
-            </div>
+          <div className="flex-1 min-h-0">
+            <SignalsPanel signals={signals} />
           </div>
         </div>
 
-        {/* ===== RIGHT COLUMN ===== */}
+        {/* ── RIGHT: forecasts + trades ── */}
         <div className="flex flex-col min-h-0 overflow-hidden">
-          {/* Signals - top portion */}
-          <div className="flex flex-col min-h-0" style={{ height: '50%' }}>
-            <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
-              <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Signals</span>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-amber-400 tabular-nums">{activeSignals.length} BTC</span>
-                {weatherSignals.length > 0 && (
-                  <span className="text-[10px] text-cyan-400 tabular-nums">{weatherSignals.length} WX</span>
-                )}
-              </div>
+          {/* Forecast cards */}
+          <div className="shrink-0 border-b border-neutral-800" style={{ maxHeight: '50%' }}>
+            <div className="px-3 py-1.5 border-b border-neutral-800 flex items-center justify-between">
+              <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Ensemble Forecasts</span>
+              <span className="text-[9px] text-neutral-600">Open-Meteo GFS</span>
             </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
-              <SignalsTable
-                signals={activeSignals}
-                weatherSignals={weatherSignals}
-                onSimulateTrade={(ticker) => tradeMutation.mutate(ticker)}
-                isSimulating={tradeMutation.isPending}
-              />
+            <div className="overflow-y-auto" style={{ maxHeight: 'calc(50vh - 60px)' }}>
+              {forecasts.length === 0 ? (
+                <div className="px-3 py-4 text-[10px] text-neutral-700">No forecast data</div>
+              ) : (
+                <div className="p-2 grid grid-cols-1 gap-2">
+                  {forecasts.map(f => <ForecastCard key={f.city_key} f={f} />)}
+                </div>
+              )}
             </div>
           </div>
 
           {/* Trades */}
-          <div className="flex flex-col min-h-0 border-t border-neutral-800" style={{ height: '50%' }}>
-            <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="shrink-0 px-3 py-1.5 border-b border-neutral-800 flex items-center justify-between">
               <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Trades</span>
-              <span className="text-[10px] text-neutral-600 tabular-nums">{recentTrades.length}</span>
+              <span className="text-[10px] text-neutral-600 tabular-nums">{data.recent_trades.length}</span>
             </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
-              <TradesTable trades={recentTrades} />
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <TradesTable trades={data.recent_trades} />
             </div>
           </div>
         </div>
-      </div>
+      </div>}
 
-      {/* ===== FOOTER ===== */}
-      <footer className="shrink-0 border-t border-neutral-800 px-3 py-0.5 flex items-center justify-between">
-        <span className="text-[10px] text-neutral-700 font-mono">
-          Binance/Coinbase | Open-Meteo | Polymarket + Kalshi
+      {/* ── FOOTER ── */}
+      <footer className="shrink-0 border-t border-neutral-800 px-4 py-1 flex items-center justify-between">
+        <span className="text-[10px] text-neutral-700">
+          Kalshi KXHIGH | Open-Meteo Ensemble | {stats.simulation_mode ? 'Simulation mode' : '⚡ Live trading'}
         </span>
-        <div className="flex items-center gap-3">
-          <RefreshBar interval={10000} />
-          <span className="text-[10px] text-neutral-700 font-mono">BTC 5-min + Weather Temp</span>
+        <div className="flex items-center gap-3 text-[10px] text-neutral-700">
+          <span>{new Date().toLocaleDateString()}</span>
           <div className="flex items-center gap-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            <span className="text-[10px] text-neutral-600 font-mono">Connected</span>
+            <div className={`w-1.5 h-1.5 rounded-full ${kalshiOk ? 'bg-green-500' : 'bg-neutral-600'}`} />
+            <span>{kalshiOk ? 'Connected' : 'No credentials'}</span>
           </div>
         </div>
       </footer>
