@@ -46,7 +46,7 @@ class WhaleFill:
     event_ticker: str
     title: str
     taker_side: str          # "yes" or "no"
-    count: int
+    count: float             # fractional contracts allowed (Kalshi count_fp)
     price_cents: int
     notional_usd: float
     created_time: datetime
@@ -154,9 +154,14 @@ async def scan_for_whales(min_usd: Optional[float] = None) -> List[WhaleFill]:
             pass
 
         taker_side = trade.get("taker_side", "yes")
-        count = int(trade.get("count", 0))
-        price_cents = int(trade.get("yes_price" if taker_side == "yes" else "no_price", 0) or 0)
-        notional_usd = count * price_cents / 100.0
+        # Kalshi's /markets/trades returns fractional contract counts as a string
+        # (count_fp) and per-contract price as a dollar string, not the integer
+        # cents fields used by the order-placement endpoints.
+        count = float(trade.get("count_fp", 0) or 0)
+        price_key = "yes_price_dollars" if taker_side == "yes" else "no_price_dollars"
+        price_dollars = float(trade.get(price_key, 0) or 0)
+        price_cents = round(price_dollars * 100)
+        notional_usd = count * price_dollars
 
         if notional_usd < threshold:
             continue

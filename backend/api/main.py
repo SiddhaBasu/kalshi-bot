@@ -25,6 +25,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from backend.api.btc_routes import router as btc_router
+app.include_router(btc_router)
+
 
 # ---------------------------------------------------------------------------
 # WebSocket manager
@@ -137,7 +140,7 @@ class WhaleTradeResponse(BaseModel):
     event_ticker: str
     title: str
     taker_side: str
-    count: int
+    count: float
     price_cents: int
     notional_usd: float
     created_time: datetime

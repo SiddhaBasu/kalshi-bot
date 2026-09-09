@@ -427,6 +427,21 @@ async def whale_scan_job():
         logger.debug(f"Whale scan error: {e}")
 
 
+async def btc_poll_job():
+    """Poll the live KXBTC15M market + record a snapshot every KXBTC_POLL_INTERVAL_SECONDS."""
+    if not settings.BTC_MARKET_ENABLED:
+        return
+    try:
+        from backend.btcmarket.kalshi_poll import poll_and_record
+        from backend.btcmarket.candles import ensure_recent_candles
+        from datetime import timedelta
+
+        await ensure_recent_candles(60, timedelta(days=1))
+        await poll_and_record()
+    except Exception as e:
+        logger.debug(f"BTC market poll error: {e}")
+
+
 async def settlement_job():
     """Check and settle pending Kalshi trades."""
     log_event("info", "Checking trade settlements...")
@@ -650,6 +665,15 @@ def start_scheduler():
             max_instances=1,
         )
 
+    if settings.BTC_MARKET_ENABLED:
+        scheduler.add_job(
+            btc_poll_job,
+            IntervalTrigger(seconds=settings.KXBTC_POLL_INTERVAL_SECONDS),
+            id="btc_market_poll",
+            replace_existing=True,
+            max_instances=1,
+        )
+
     scheduler.add_job(
         heartbeat_job,
         IntervalTrigger(minutes=1),
@@ -679,6 +703,15 @@ def start_scheduler():
     # Run API check then first scan — no trades on first scan since nothing is confirmed yet
     async def _startup_sequence():
         await _startup_api_check()
+        if settings.BTC_MARKET_ENABLED:
+            try:
+                from backend.btcmarket.candles import ensure_recent_candles
+                from datetime import timedelta
+                added_1m = await ensure_recent_candles(60, timedelta(days=1))
+                added_1h = await ensure_recent_candles(3600, timedelta(days=30))
+                log_event("success", f"BTC candles backfilled: +{added_1m} 1m, +{added_1h} 1h")
+            except Exception as e:
+                log_event("warning", f"BTC candle backfill failed: {e}")
         await scan_and_trade_job()
 
     asyncio.create_task(_startup_sequence())

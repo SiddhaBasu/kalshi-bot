@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { DashboardData, Trade, BotStats, WeatherForecast, WeatherSignal, BacktestData, WhaleTrade, WhaleStats } from './types'
+import type { DashboardData, Trade, BotStats, WeatherForecast, WeatherSignal, BacktestData, WhaleTrade, WhaleStats, BtcCandle, KxBtcMarket, KxBtcSnapshot } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -74,5 +74,20 @@ export async function fetchWhaleStats(): Promise<WhaleStats> {
 
 export async function runWhaleScan(): Promise<{ status: string; timestamp: string }> {
   const { data } = await api.post('/whales/scan')
+  return data
+}
+
+export async function fetchBtcCandles(range: '1d' | '1m' = '1d'): Promise<BtcCandle[]> {
+  const { data } = await api.get<BtcCandle[]>('/btc/candles', { params: { range } })
+  return data
+}
+
+export async function fetchBtcMarket(): Promise<{ market: KxBtcMarket | null }> {
+  const { data } = await api.get<{ market: KxBtcMarket | null }>('/btc/market')
+  return data
+}
+
+export async function fetchBtcHistory(range: '1h' | '1d' | '1w' | '1m' = '1d'): Promise<KxBtcSnapshot[]> {
+  const { data } = await api.get<KxBtcSnapshot[]>('/btc/history', { params: { range } })
   return data
 }

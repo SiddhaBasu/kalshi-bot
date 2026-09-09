@@ -143,6 +143,45 @@ export interface BacktestData {
   note: string
 }
 
+// ── BTC 15-min Kalshi market ─────────────────────────────────────────────────
+
+export interface BtcCandle {
+  time: number   // unix seconds
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export interface KxBtcMarket {
+  ticker: string
+  event_ticker: string
+  title: string
+  floor_strike: number
+  open_time: string
+  close_time: string
+  yes_bid: number
+  yes_ask: number
+  no_bid: number
+  no_ask: number
+  volume: number
+  rules_primary: string
+}
+
+export interface KxBtcSnapshot {
+  time: number
+  ticker: string
+  event_ticker: string
+  floor_strike: number
+  yes_bid: number
+  yes_ask: number
+  no_bid: number
+  no_ask: number
+  yes_mid: number | null
+  btc_price: number | null
+}
+
 // ── Whale scanner ─────────────────────────────────────────────────────────────
 
 export interface WhaleTrade {

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     WHALE_SCAN_INTERVAL_SECONDS: int = 30
     WHALE_CSV_PATH: str = "whale_trades.csv"
 
+    # BTC 15-min market data module (KXBTC15M): candles + live orderbook snapshots
+    BTC_MARKET_ENABLED: bool = True
+    KXBTC15M_SERIES_TICKER: str = "KXBTC15M"
+    KXBTC_POLL_INTERVAL_SECONDS: int = 10
+    KXBTC_SNAPSHOT_RETENTION_DAYS: int = 35
+
     class Config:
         env_file = ".env"
 

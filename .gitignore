@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 venv/
+kenv/
 ENV/
 env/
 .venv/
@@ -56,3 +57,10 @@ logs/
 htmlcov/
 .pytest_cache/
 *.pem
+t2.txt
+
+# Runtime data exports
+whale_trades*.csv
+
+# Claude Code local settings
+.claude/

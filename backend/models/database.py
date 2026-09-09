@@ -98,13 +98,48 @@ class WhaleTrade(Base):
     title = Column(String)
 
     taker_side = Column(String)      # "yes" or "no"
-    count = Column(Integer)
+    count = Column(Float)            # fractional contracts allowed (Kalshi count_fp)
     price_cents = Column(Integer)
     notional_usd = Column(Float, index=True)
 
     created_time = Column(DateTime, index=True)   # when the trade happened on Kalshi
     discovered_at = Column(DateTime, default=datetime.utcnow)
     link = Column(String)
+
+
+class BtcCandle(Base):
+    """Cached OHLCV candle for BTC-USD, sourced from Coinbase."""
+    __tablename__ = "btc_candles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    granularity_seconds = Column(Integer, index=True)   # 60 = 1m, 3600 = 1h
+    open_time = Column(DateTime, index=True)
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+
+
+class KxBtcSnapshot(Base):
+    """A point-in-time snapshot of the live KXBTC15M market (top-of-book + reference price)."""
+    __tablename__ = "kxbtc_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, index=True)
+    event_ticker = Column(String, index=True)
+    timestamp = Column(DateTime, index=True)
+
+    floor_strike = Column(Float)     # target/strike price for this window
+    open_time = Column(DateTime)
+    close_time = Column(DateTime)
+
+    yes_bid = Column(Float)          # 0-1
+    yes_ask = Column(Float)          # 0-1
+    no_bid = Column(Float)
+    no_ask = Column(Float)
+
+    btc_price = Column(Float, nullable=True)  # BTC-USD spot at snapshot time (Coinbase), for reference
 
 
 class ScanLog(Base):

@@ -80,7 +80,9 @@ function WhalesTable({ trades }: { trades: WhaleTrade[] }) {
                   {t.taker_side}
                 </span>
               </td>
-              <td className="py-1.5 px-2 text-right text-neutral-400 tabular-nums">{t.count.toLocaleString()}</td>
+              <td className="py-1.5 px-2 text-right text-neutral-400 tabular-nums">
+                {t.count.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </td>
               <td className="py-1.5 px-2 text-right text-neutral-400 tabular-nums">{t.price_cents}c</td>
               <td className="py-1.5 px-2 text-right text-amber-400 tabular-nums font-semibold">
                 {usd(t.notional_usd)}
