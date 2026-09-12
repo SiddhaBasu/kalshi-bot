@@ -1,41 +1,46 @@
 import { useEffect, useRef } from 'react'
-import { createChart, CrosshairMode, type IChartApi, type ISeriesApi, type SeriesMarker, type Time } from 'lightweight-charts'
+import { createChart, CrosshairMode, type IChartApi, type ISeriesApi, type IPriceLine, type SeriesMarker, type Time } from 'lightweight-charts'
 import type { BtcCandle } from '../types'
 import { detectPatterns } from '../utils/candlePatterns'
+import { dedupeByTime } from '../utils/dedupeByTime'
 
 const PATTERN_COLORS: Record<string, string> = {
-  'Doji': '#a3a3a3',
-  'Hammer': '#22c55e',
-  'Inverted Hammer': '#22c55e',
-  'Shooting Star': '#ef4444',
-  'Bullish Engulfing': '#22c55e',
-  'Bearish Engulfing': '#ef4444',
+  'Doji': '#787b86',
+  'Hammer': '#26a69a',
+  'Inverted Hammer': '#26a69a',
+  'Shooting Star': '#ef5350',
+  'Bullish Engulfing': '#26a69a',
+  'Bearish Engulfing': '#ef5350',
 }
 
-export function BtcCandlestickChart({ candles, showPatterns = true }: { candles: BtcCandle[]; showPatterns?: boolean }) {
+export function BtcCandlestickChart({ candles, showPatterns = true, viewKey, targetPrice, targetLabel = 'Target' }: {
+  candles: BtcCandle[]; showPatterns?: boolean; viewKey?: string; targetPrice?: number | null; targetLabel?: string
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const targetLineRef = useRef<IPriceLine | null>(null)
+  const hasFitRef = useRef(false)
 
   useEffect(() => {
     if (!containerRef.current) return
 
     const chart = createChart(containerRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#a3a3a3', fontFamily: 'monospace', fontSize: 10 },
-      grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
-      crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: '#262626' },
-      timeScale: { borderColor: '#262626', timeVisible: true, secondsVisible: false },
+      layout: { background: { color: '#ffffff' }, textColor: '#131722', fontFamily: "-apple-system, 'Trebuchet MS', Roboto, Ubuntu, sans-serif", fontSize: 11 },
+      grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+      crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#9598a1', labelBackgroundColor: '#131722' }, horzLine: { color: '#9598a1', labelBackgroundColor: '#131722' } },
+      rightPriceScale: { borderColor: '#e0e3eb' },
+      timeScale: { borderColor: '#e0e3eb', timeVisible: true, secondsVisible: false },
       autoSize: true,
     })
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: '#22c55e',
-      downColor: '#ef4444',
+      upColor: '#26a69a',
+      downColor: '#ef5350',
       borderVisible: false,
-      wickUpColor: '#22c55e',
-      wickDownColor: '#ef4444',
+      wickUpColor: '#26a69a',
+      wickDownColor: '#ef5350',
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     })
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.05, bottom: 0.25 } })
@@ -49,6 +54,7 @@ export function BtcCandlestickChart({ candles, showPatterns = true }: { candles:
     chartRef.current = chart
     candleSeriesRef.current = candleSeries
     volumeSeriesRef.current = volumeSeries
+    hasFitRef.current = false
 
     return () => {
       chart.remove()
@@ -56,27 +62,38 @@ export function BtcCandlestickChart({ candles, showPatterns = true }: { candles:
     }
   }, [])
 
+  // A deliberate filter change (interval/lookback) should re-fit the view;
+  // a background data refresh at the same filter should never touch it.
   useEffect(() => {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current) return
+    hasFitRef.current = false
+  }, [viewKey])
+
+  useEffect(() => {
+    if (!candleSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return
     if (candles.length === 0) return
 
+    const deduped = dedupeByTime(candles)
+
+    // Preserve whatever the user was looking at (pan/zoom) across data refreshes.
+    const savedRange = hasFitRef.current ? chartRef.current.timeScale().getVisibleLogicalRange() : null
+
     candleSeriesRef.current.setData(
-      candles.map(c => ({ time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close }))
+      deduped.map(c => ({ time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close }))
     )
     volumeSeriesRef.current.setData(
-      candles.map(c => ({
+      deduped.map(c => ({
         time: c.time as Time,
         value: c.volume,
-        color: c.close >= c.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
+        color: c.close >= c.open ? 'rgba(38,166,154,0.4)' : 'rgba(239,83,80,0.4)',
       }))
     )
 
     if (showPatterns) {
-      const patterns = detectPatterns(candles)
+      const patterns = detectPatterns(deduped)
       const markers: SeriesMarker<Time>[] = patterns.map(p => ({
         time: p.time as Time,
         position: p.bullish ? 'belowBar' : 'aboveBar',
-        color: PATTERN_COLORS[p.pattern] ?? '#a3a3a3',
+        color: PATTERN_COLORS[p.pattern] ?? '#787b86',
         shape: p.bullish ? 'arrowUp' : 'arrowDown',
         text: p.pattern,
       }))
@@ -85,8 +102,31 @@ export function BtcCandlestickChart({ candles, showPatterns = true }: { candles:
       candleSeriesRef.current.setMarkers([])
     }
 
-    chartRef.current?.timeScale().fitContent()
+    if (savedRange) {
+      chartRef.current.timeScale().setVisibleLogicalRange(savedRange)
+    } else {
+      chartRef.current.timeScale().fitContent()
+      hasFitRef.current = true
+    }
   }, [candles, showPatterns])
+
+  useEffect(() => {
+    if (!candleSeriesRef.current) return
+    if (targetLineRef.current) {
+      candleSeriesRef.current.removePriceLine(targetLineRef.current)
+      targetLineRef.current = null
+    }
+    if (targetPrice) {
+      targetLineRef.current = candleSeriesRef.current.createPriceLine({
+        price: targetPrice,
+        color: '#ff9800',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: targetLabel,
+      })
+    }
+  }, [targetPrice, targetLabel])
 
   return <div ref={containerRef} className="w-full h-full" />
 }

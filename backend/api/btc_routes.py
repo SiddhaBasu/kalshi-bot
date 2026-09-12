@@ -17,9 +17,17 @@ HISTORY_RANGES = {
 
 
 @router.get("/candles")
-async def get_candles(range: str = "1d"):
-    """OHLCV candles for the BTC candlestick chart. range: '1d' (1m candles) or '1m' (1h candles)."""
-    return await candles_mod.get_candles_for_range(range if range in candles_mod.RANGE_CONFIG else "1d")
+async def get_candles(interval: str = "1m", lookback: str = "1d"):
+    """
+    OHLCV candles for the BTC candlestick chart.
+    interval: 1m | 5m | 15m | 1h | 6h | 1d (candle width)
+    lookback: 1d | 3d | 1w | 1m (how far back to fetch, ending now)
+    """
+    if interval not in candles_mod.INTERVAL_SECONDS:
+        interval = "1m"
+    if lookback not in candles_mod.LOOKBACK_TIMEDELTA:
+        lookback = "1d"
+    return await candles_mod.get_candles(interval, lookback)
 
 
 @router.get("/market")
@@ -49,6 +57,30 @@ async def get_market():
 
 @router.get("/history")
 async def get_history(range: str = "1d"):
-    """Recorded yes/no probability history from our own orderbook snapshots (live-recorded, not backfilled)."""
+    """Recorded yes/no probability history: real backfilled candlestick data plus live 1Hz snapshots."""
     lookback = HISTORY_RANGES.get(range, HISTORY_RANGES["1d"])
     return kalshi_poll.get_recent_snapshots(lookback)
+
+
+@router.get("/kalshi-candles")
+async def get_kalshi_candles(range: str = "1d"):
+    """Real OHLC candlesticks of the KXBTC15M YES price, stitched across rotating 15-min windows."""
+    from backend.btcmarket import kalshi_history
+    lookback = HISTORY_RANGES.get(range, HISTORY_RANGES["1d"])
+    return kalshi_history.get_kxbtc_candles(lookback)
+
+
+@router.get("/signal")
+async def get_signal():
+    """
+    Model-vs-market read for the currently-open KXBTC15M window: a driftless-GBM
+    probability that BTC settles at/above the strike, estimated from realized
+    volatility of recent 1-minute candles, compared against the live orderbook price.
+    """
+    from backend.btcmarket import model as model_mod
+    from dataclasses import asdict
+
+    signal = await model_mod.generate_btc_signal()
+    if not signal:
+        return {"signal": None}
+    return {"signal": asdict(signal)}

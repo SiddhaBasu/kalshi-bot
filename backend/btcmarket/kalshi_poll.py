@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from backend.config import settings
-from backend.models.database import SessionLocal, KxBtcSnapshot, BtcCandle
+from backend.models.database import SessionLocal, KxBtcSnapshot, KxBtcCandle, BtcCandle
 from backend.scanner.kalshi_api import KalshiScannerAPI
 
 logger = logging.getLogger("trading_bot")
@@ -87,9 +87,21 @@ async def poll_and_record() -> Optional[dict]:
         "btc_price": _latest_btc_price(),
     }
 
+    yes_mid = (snapshot["yes_bid"] + snapshot["yes_ask"]) / 2
+    bucket = snapshot["timestamp"].replace(second=0, microsecond=0)
+
     db = SessionLocal()
     try:
         db.add(KxBtcSnapshot(**snapshot))
+
+        row = db.query(KxBtcCandle).filter(KxBtcCandle.open_time == bucket).first()
+        if row:
+            row.high = max(row.high, yes_mid)
+            row.low = min(row.low, yes_mid)
+            row.close = yes_mid
+        else:
+            db.add(KxBtcCandle(open_time=bucket, open=yes_mid, high=yes_mid, low=yes_mid, close=yes_mid, volume=0.0))
+
         db.commit()
     finally:
         db.close()

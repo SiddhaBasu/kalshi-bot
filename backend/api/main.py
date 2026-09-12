@@ -647,6 +647,61 @@ async def backtest_nyc(lookback_days: int = 365):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/btc/train-model")
+async def train_btc_model(lookback_days: int = 60):
+    """
+    Train the offline KXBTC15M XGBoost model on recorded orderbook snapshots +
+    BTC candle history, evaluate it against the GBM baseline and the live
+    market price, and save the model artifact. Research-only -- does not
+    affect the live /api/btc/signal path.
+    """
+    try:
+        from backend.core.btc_model_training import train_btc_model as _train
+        return await _train(lookback_days=lookback_days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/btc/paper-trading")
+async def btc_paper_trading_report(lookback_hours: Optional[float] = None):
+    """Simulated (never real) BTC paper-trading performance: win rate, PnL, and model calibration."""
+    try:
+        from backend.core.btc_paper_trading import paper_trading_report
+        return paper_trading_report(lookback_hours=lookback_hours)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/btc/holdout-eval")
+async def btc_holdout_eval(lookback_days: int = 90):
+    """
+    One-shot forward validation against settled windows on/after
+    settings.BTC_HOLDOUT_START -- data never used for training or tuning.
+    Read-only; safe to call anytime to check progress.
+    """
+    try:
+        from backend.core.btc_model_training import evaluate_holdout
+        return await evaluate_holdout(lookback_days=lookback_days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/btc/feature-parity")
+async def btc_feature_parity(lookback_hours: float = 48):
+    """
+    Compares live-computed feature vectors (BtcPaperTrade.features_json)
+    against what the offline training pipeline would compute for the same
+    ticker/timestamp. Flags any feature drifting beyond tolerance -- this is
+    how the last two train/serve skew bugs would have been caught
+    automatically instead of by manual investigation.
+    """
+    try:
+        from backend.core.btc_feature_parity import check_feature_parity
+        return await check_feature_parity(lookback_hours=lookback_hours)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ---------------------------------------------------------------------------
 # Whale scanner
 # ---------------------------------------------------------------------------

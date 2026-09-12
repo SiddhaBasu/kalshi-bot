@@ -1,6 +1,7 @@
 """Background scheduler for Kalshi weather temperature trading."""
 import asyncio
 import math
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -25,6 +26,24 @@ scheduler: Optional[AsyncIOScheduler] = None
 
 event_log: List[dict] = []
 MAX_LOG_SIZE = 200
+
+# For jobs that run at 1Hz, logging every failure at WARNING risks up to 3600
+# lines/hour during a real outage. This throttles: always log the first
+# failure immediately (visibility), then at most once per _THROTTLE_SECONDS
+# while it keeps failing, so a persistent break is still visible without
+# flooding bot.log.
+_THROTTLE_SECONDS = 60.0
+_last_warned_at: Dict[str, float] = {}
+
+
+def _log_throttled_warning(key: str, message: str) -> None:
+    import time
+    now = time.monotonic()
+    last = _last_warned_at.get(key)
+    if last is None or (now - last) >= _THROTTLE_SECONDS:
+        _last_warned_at[key] = now
+        logger.warning(message)
+        logger.exception(f"Full traceback for {key}")
 
 # ---------------------------------------------------------------------------
 # Signal confirmation tracking
@@ -125,6 +144,9 @@ async def scan_and_trade_job():
            - Seen for CONFIRM_MINUTES+ → trade (or log "would trade" in sim)
       3. Remove stale confirmations (signal dropped below threshold)
     """
+    if not settings.WEATHER_BOT_ENABLED:
+        return
+
     global _scan_count
     _scan_count += 1
 
@@ -428,18 +450,187 @@ async def whale_scan_job():
 
 
 async def btc_poll_job():
-    """Poll the live KXBTC15M market + record a snapshot every KXBTC_POLL_INTERVAL_SECONDS."""
+    """Poll the live KXBTC15M market + record a snapshot every KXBTC_POLL_INTERVAL_SECONDS (1Hz)."""
     if not settings.BTC_MARKET_ENABLED:
         return
     try:
         from backend.btcmarket.kalshi_poll import poll_and_record
-        from backend.btcmarket.candles import ensure_recent_candles
-        from datetime import timedelta
-
-        await ensure_recent_candles(60, timedelta(days=1))
         await poll_and_record()
     except Exception as e:
-        logger.debug(f"BTC market poll error: {e}")
+        # Throttled warning, not silent debug -- runs at 1Hz, so an
+        # unthrottled warning-per-failure would flood bot.log during a real
+        # outage. This still surfaces a persistent failure (first occurrence
+        # immediately, then at most once/minute) instead of hiding it.
+        _log_throttled_warning("btc_market_poll", f"BTC market poll error: {e}")
+
+
+async def btc_ticker_poll_job():
+    """Poll Coinbase's latest trade price every BTC_TICKER_POLL_SECONDS (1Hz) to keep the forming candle live."""
+    if not settings.BTC_MARKET_ENABLED:
+        return
+    try:
+        from backend.btcmarket.candles import poll_live_price
+        await poll_live_price()
+    except Exception as e:
+        # Same throttled-warning rationale as btc_poll_job above (1Hz cadence).
+        _log_throttled_warning("btc_ticker_poll", f"BTC ticker poll error: {e}")
+
+
+async def btc_orderbook_poll_job():
+    """Record top-N orderbook depth for the open KXBTC15M window (own cadence, separate from the 1s top-of-book poll)."""
+    if not settings.BTC_MARKET_ENABLED:
+        return
+    try:
+        from backend.btcmarket.orderbook import record_orderbook_snapshot
+        await record_orderbook_snapshot()
+    except Exception as e:
+        # WARNING not debug -- runs every 5s (not 1Hz), so a persistent failure
+        # surfaces promptly without 1Hz-scale log spam. Same rationale as the
+        # settlement/retrain job fixes above.
+        logger.warning(f"BTC orderbook depth poll error: {e}")
+        logger.exception("Full traceback for BTC orderbook depth poll error")
+
+
+async def btc_history_refresh_job():
+    """Backfill any newly-settled KXBTC15M windows into real historical candlestick data."""
+    if not settings.BTC_MARKET_ENABLED:
+        return
+    try:
+        from backend.btcmarket.kalshi_history import backfill_kxbtc_history
+        from datetime import timedelta
+        await backfill_kxbtc_history(timedelta(hours=1))
+    except Exception as e:
+        # WARNING not debug -- runs every 5min, safe frequency for visible logging.
+        logger.warning(f"BTC history refresh error: {e}")
+        logger.exception("Full traceback for BTC history refresh error")
+
+
+async def btc_paper_signal_job():
+    """Check the current KXBTC15M window against the trained model; journal a simulated trade if there's a real edge."""
+    if not settings.BTC_MARKET_ENABLED or not settings.BTC_PAPER_TRADING_ENABLED:
+        return
+    try:
+        from backend.core.btc_paper_trading import generate_paper_trade
+        trade = await generate_paper_trade()
+        if trade:
+            log_event("trade",
+                f"[PAPER] BTC {trade['ticker']}: {trade['direction'].upper()} ${trade['size']:.2f} "
+                f"@ {trade['entry_price']:.0%} | edge {trade['edge']:+.1%}",
+                trade,
+            )
+    except Exception as e:
+        # WARNING not debug -- runs every 15s, safe frequency. A silently
+        # failing signal job means the bot simply stops trading with no
+        # visible reason, the exact failure mode this project has been
+        # burned by before.
+        logger.warning(f"BTC paper signal error: {e}")
+        logger.exception("Full traceback for BTC paper signal error")
+
+
+async def btc_paper_settlement_job():
+    """Settle any paper trades whose window has closed, against Kalshi's real result."""
+    if not settings.BTC_MARKET_ENABLED or not settings.BTC_PAPER_TRADING_ENABLED:
+        return
+    try:
+        from backend.core.btc_paper_trading import settle_paper_trades
+        settled = await settle_paper_trades()
+        if settled:
+            wins = sum(1 for t in settled if t["result"] == "win")
+            pnl = sum(t["pnl"] for t in settled if t["pnl"] is not None)
+            log_event("data", f"[PAPER] Settled {len(settled)} BTC paper trade(s): {wins}W/{len(settled)-wins}L, P&L ${pnl:+.2f}")
+    except Exception as e:
+        # WARNING, not debug -- this exact "broad except swallows a real error
+        # at an invisible log level" pattern has hidden real bugs twice already
+        # this session (a DetachedInstanceError in this same settlement path,
+        # and a similar one in orderbook depth recording). A settlement job
+        # that silently does nothing for 25+ minutes should never be invisible.
+        logger.warning(f"BTC paper settlement error: {e}")
+        logger.exception("Full traceback for BTC paper settlement error")
+
+
+async def btc_retrain_job():
+    """Walk-forward retrain the KXBTC15M model on all settled windows recorded so far."""
+    if not settings.BTC_MARKET_ENABLED:
+        return
+    try:
+        from backend.core.btc_model_training import train_btc_model, fit_live_recalibration
+        report = await train_btc_model()
+        if report.get("status") == "ok":
+            log_event("success", f"BTC model retrained: {report['note']}")
+        else:
+            log_event("info", f"BTC model retrain skipped: {report.get('note', report.get('status'))}")
+
+        # Refresh the secondary live-outcome recalibration each retrain cycle too,
+        # so it keeps adapting as more paper-trading data accumulates rather than
+        # being a one-time fit that goes stale. No-op (returns "insufficient_data")
+        # until enough live trades exist -- see fit_live_recalibration's docstring.
+        live_calib_report = fit_live_recalibration()
+        if live_calib_report.get("status") == "ok":
+            log_event("success", f"BTC live recalibration refreshed: n={live_calib_report['n']} live trades")
+        else:
+            log_event("info", f"BTC live recalibration skipped: {live_calib_report.get('note', live_calib_report.get('status'))}")
+    except Exception as e:
+        # WARNING, not debug -- same "broad except swallows a real error at an
+        # invisible log level" pattern already found and fixed in
+        # btc_paper_settlement_job. A retrain that silently fails every 6h
+        # should never be invisible.
+        logger.warning(f"BTC retrain error: {e}")
+        logger.exception("Full traceback for BTC retrain error")
+
+
+async def btc_feature_parity_job():
+    """Check whether live-computed features are drifting from what the offline pipeline would compute for the same trades -- catches the next train/serve skew bug automatically."""
+    if not settings.BTC_MARKET_ENABLED or not settings.BTC_PAPER_TRADING_ENABLED:
+        return
+    try:
+        from backend.core.btc_feature_parity import check_feature_parity
+        report = await check_feature_parity(lookback_hours=48)
+        if report.get("status") != "ok":
+            return
+        if report["flagged_features"]:
+            log_event("warning",
+                f"BTC feature parity: {report['flagged_features']} exceed tolerance across "
+                f"{report['trades_checked']} trades -- possible live/offline skew, check /api/btc/feature-parity",
+                {"flagged": report["flagged_features"]},
+            )
+        else:
+            log_event("info", f"BTC feature parity OK across {report['trades_checked']} trades ({report['trades_skipped_no_match']} skipped, no offline match)")
+    except Exception as e:
+        # WARNING not debug -- runs every 3h, this is the safety net that
+        # catches train/serve skew bugs; if it silently breaks, that safety
+        # net is silently gone.
+        logger.warning(f"BTC feature parity check error: {e}")
+        logger.exception("Full traceback for BTC feature parity check error")
+
+
+async def btc_hourly_analysis_job():
+    """Every hour, report the paper-trading bot's own performance -- win rate, PnL, calibration -- to logs + Discord."""
+    if not settings.BTC_MARKET_ENABLED or not settings.BTC_PAPER_TRADING_ENABLED:
+        return
+    try:
+        from backend.core.btc_paper_trading import paper_trading_report
+        hour = paper_trading_report(lookback_hours=1)
+        life = paper_trading_report(lookback_hours=None)
+
+        log_event("data",
+            f"[BTC PAPER HOURLY] Past hour: {hour['trades_settled']} settled "
+            f"({hour['wins']}W/{hour['losses']}L, win rate {hour['win_rate']}), P&L ${hour['total_pnl']:+.2f} | "
+            f"Lifetime: {life['lifetime_trades']} trades, ${life['lifetime_pnl']:+.2f}, bankroll ${life['bankroll']:.2f}, "
+            f"{life['trades_pending']} pending",
+            {"hour": hour, "lifetime": life},
+        )
+        await _send_discord(
+            title="BTC Paper-Trading Hourly Report",
+            description=f"Bankroll: **${life['bankroll']:.2f}** | Lifetime P&L: **${life['lifetime_pnl']:+.2f}**",
+            color=0x57F287 if hour["total_pnl"] >= 0 else 0xED4245,
+            fields=[
+                {"name": "Past Hour", "value": f"{hour['trades_settled']} settled, {hour['win_rate'] or 0:.0%} win rate, ${hour['total_pnl']:+.2f}", "inline": False},
+                {"name": "Pending", "value": str(hour["trades_pending"]), "inline": True},
+                {"name": "Model Calibration (Brier, lifetime)", "value": str(life["model_brier"]), "inline": True},
+            ],
+        )
+    except Exception as e:
+        logger.debug(f"BTC hourly analysis error: {e}")
 
 
 async def settlement_job():
@@ -672,6 +863,74 @@ def start_scheduler():
             id="btc_market_poll",
             replace_existing=True,
             max_instances=1,
+            coalesce=True,
+            misfire_grace_time=2,
+        )
+        scheduler.add_job(
+            btc_ticker_poll_job,
+            IntervalTrigger(seconds=settings.BTC_TICKER_POLL_SECONDS),
+            id="btc_ticker_poll",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=2,
+        )
+        scheduler.add_job(
+            btc_orderbook_poll_job,
+            IntervalTrigger(seconds=settings.KXBTC_ORDERBOOK_POLL_INTERVAL_SECONDS),
+            id="btc_orderbook_poll",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=5,
+        )
+        scheduler.add_job(
+            btc_history_refresh_job,
+            IntervalTrigger(seconds=settings.KXBTC_HISTORY_REFRESH_SECONDS),
+            id="btc_history_refresh",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    if settings.BTC_MARKET_ENABLED and settings.BTC_PAPER_TRADING_ENABLED:
+        scheduler.add_job(
+            btc_paper_signal_job,
+            IntervalTrigger(seconds=settings.BTC_PAPER_SIGNAL_INTERVAL_SECONDS),
+            id="btc_paper_signal",
+            replace_existing=True,
+            max_instances=1,
+        )
+        scheduler.add_job(
+            btc_paper_settlement_job,
+            IntervalTrigger(seconds=settings.BTC_PAPER_SETTLEMENT_INTERVAL_SECONDS),
+            id="btc_paper_settlement",
+            replace_existing=True,
+            max_instances=1,
+        )
+        scheduler.add_job(
+            btc_hourly_analysis_job,
+            IntervalTrigger(seconds=settings.BTC_HOURLY_ANALYSIS_INTERVAL_SECONDS),
+            id="btc_hourly_analysis",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    if settings.BTC_MARKET_ENABLED:
+        scheduler.add_job(
+            btc_retrain_job,
+            IntervalTrigger(seconds=settings.BTC_RETRAIN_INTERVAL_SECONDS),
+            id="btc_retrain",
+            replace_existing=True,
+            max_instances=1,
+        )
+
+    if settings.BTC_MARKET_ENABLED and settings.BTC_PAPER_TRADING_ENABLED:
+        scheduler.add_job(
+            btc_feature_parity_job,
+            IntervalTrigger(hours=3),
+            id="btc_feature_parity",
+            replace_existing=True,
+            max_instances=1,
         )
 
     scheduler.add_job(
@@ -712,6 +971,28 @@ def start_scheduler():
                 log_event("success", f"BTC candles backfilled: +{added_1m} 1m, +{added_1h} 1h")
             except Exception as e:
                 log_event("warning", f"BTC candle backfill failed: {e}")
+
+            try:
+                from backend.btcmarket.kalshi_history import backfill_kxbtc_history
+                from datetime import timedelta
+                added_snapshots = await backfill_kxbtc_history(timedelta(days=30))
+                log_event("success", f"KXBTC15M real history backfilled: +{added_snapshots} snapshots")
+            except Exception as e:
+                log_event("warning", f"KXBTC15M history backfill failed: {e}")
+
+            try:
+                from backend.btcmarket.kalshi_history import backfill_missing_btc_price
+                fixed = backfill_missing_btc_price()
+                if fixed:
+                    log_event("success", f"KXBTC15M snapshots: repaired {fixed} missing btc_price values")
+            except Exception as e:
+                log_event("warning", f"btc_price repair failed: {e}")
+
+            if not os.path.exists(os.path.join(os.path.dirname(__file__), "..", "btcmarket", "artifacts", "kxbtc15m_xgb.json")):
+                try:
+                    await btc_retrain_job()
+                except Exception as e:
+                    log_event("warning", f"Initial BTC model training failed: {e}")
         await scan_and_trade_job()
 
     asyncio.create_task(_startup_sequence())

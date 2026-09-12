@@ -1,0 +1,329 @@
+{
+  "status": "ok",
+  "method": "walk_forward",
+  "note": "Walk-forward across 5 fold(s), 2845 total settled windows: XGBoost beats the GBM baseline and beats the live market on aggregated held-out Brier score. Production model retrained on all 2560 windows for live paper-trading inference.",
+  "fold_reports": [
+    {
+      "fold": 1,
+      "train_windows": 150,
+      "test_windows": 539,
+      "test_rows": 7751,
+      "xgb_brier": 0.15367,
+      "gbm_brier": 0.16237,
+      "market_brier": 0.15904
+    },
+    {
+      "fold": 2,
+      "train_windows": 689,
+      "test_windows": 539,
+      "test_rows": 7730,
+      "xgb_brier": 0.1341,
+      "gbm_brier": 0.14584,
+      "market_brier": 0.15025
+    },
+    {
+      "fold": 3,
+      "train_windows": 1228,
+      "test_windows": 539,
+      "test_rows": 7718,
+      "xgb_brier": 0.12621,
+      "gbm_brier": 0.1432,
+      "market_brier": 0.14822
+    },
+    {
+      "fold": 4,
+      "train_windows": 1767,
+      "test_windows": 539,
+      "test_rows": 7719,
+      "xgb_brier": 0.13092,
+      "gbm_brier": 0.1421,
+      "market_brier": 0.1492
+    },
+    {
+      "fold": 5,
+      "train_windows": 2306,
+      "test_windows": 539,
+      "test_rows": 26461,
+      "xgb_brier": 0.12489,
+      "gbm_brier": 0.14763,
+      "market_brier": 0.14584
+    }
+  ],
+  "trained_at": "2026-09-11T21:49:52.069256",
+  "lookback_days": 60,
+  "total_windows": 2845,
+  "production_windows": 2560,
+  "metrics": {
+    "xgb": {
+      "brier": 0.131,
+      "log_loss": 0.40393,
+      "accuracy": 0.8162
+    },
+    "gbm_baseline": {
+      "brier": 0.14804,
+      "log_loss": 0.45314,
+      "accuracy": 0.7879
+    },
+    "market": {
+      "brier": 0.14899,
+      "log_loss": 0.44977,
+      "accuracy": 0.7796
+    },
+    "xgb_calibrated_on_same_data_DO_NOT_TRUST_FOR_COMPARISON": {
+      "brier": 0.13056,
+      "log_loss": 0.40154,
+      "accuracy": 0.8166
+    }
+  },
+  "feature_importance": [
+    {
+      "feature": "distance_log",
+      "importance": 0.5838
+    },
+    {
+      "feature": "gbm_prob",
+      "importance": 0.1241
+    },
+    {
+      "feature": "yes_mid",
+      "importance": 0.0782
+    },
+    {
+      "feature": "h1_log_return",
+      "importance": 0.0443
+    },
+    {
+      "feature": "spread",
+      "importance": 0.027
+    },
+    {
+      "feature": "hour_sin",
+      "importance": 0.0157
+    },
+    {
+      "feature": "elapsed_fraction",
+      "importance": 0.0152
+    },
+    {
+      "feature": "macd_histogram_pct",
+      "importance": 0.0138
+    },
+    {
+      "feature": "h1_range_pct",
+      "importance": 0.0131
+    },
+    {
+      "feature": "seconds_remaining",
+      "importance": 0.013
+    },
+    {
+      "feature": "m1_ret_1m",
+      "importance": 0.0122
+    },
+    {
+      "feature": "m1_vol_sum_15m",
+      "importance": 0.0117
+    },
+    {
+      "feature": "realized_vol_per_second",
+      "importance": 0.0105
+    },
+    {
+      "feature": "settlement_bias",
+      "importance": 0.0102
+    },
+    {
+      "feature": "vwap_deviation_60m",
+      "importance": 0.01
+    },
+    {
+      "feature": "hour_cos",
+      "importance": 0.0091
+    },
+    {
+      "feature": "path_efficiency_15m",
+      "importance": 0.0046
+    },
+    {
+      "feature": "bollinger_pct_b",
+      "importance": 0.0021
+    },
+    {
+      "feature": "rsi_14",
+      "importance": 0.0011
+    },
+    {
+      "feature": "m1_vol_sum_5m",
+      "importance": 0.0004
+    },
+    {
+      "feature": "m1_ret_5m",
+      "importance": 0.0
+    },
+    {
+      "feature": "quote_age_seconds",
+      "importance": 0.0
+    },
+    {
+      "feature": "btc_move_since_quote",
+      "importance": 0.0
+    }
+  ],
+  "calibration_xgb": [
+    {
+      "bucket": "0-10%",
+      "n": 6121,
+      "predicted_avg": 0.0554,
+      "actual_rate": 0.0327
+    },
+    {
+      "bucket": "10-20%",
+      "n": 5394,
+      "predicted_avg": 0.1499,
+      "actual_rate": 0.1018
+    },
+    {
+      "bucket": "20-30%",
+      "n": 4957,
+      "predicted_avg": 0.2514,
+      "actual_rate": 0.2395
+    },
+    {
+      "bucket": "30-40%",
+      "n": 4814,
+      "predicted_avg": 0.3494,
+      "actual_rate": 0.3463
+    },
+    {
+      "bucket": "40-50%",
+      "n": 4719,
+      "predicted_avg": 0.4498,
+      "actual_rate": 0.4039
+    },
+    {
+      "bucket": "50-60%",
+      "n": 4146,
+      "predicted_avg": 0.5506,
+      "actual_rate": 0.6218
+    },
+    {
+      "bucket": "60-70%",
+      "n": 4094,
+      "predicted_avg": 0.6476,
+      "actual_rate": 0.6952
+    },
+    {
+      "bucket": "70-80%",
+      "n": 5026,
+      "predicted_avg": 0.7552,
+      "actual_rate": 0.7744
+    },
+    {
+      "bucket": "80-90%",
+      "n": 5526,
+      "predicted_avg": 0.849,
+      "actual_rate": 0.8523
+    },
+    {
+      "bucket": "90-100%",
+      "n": 12582,
+      "predicted_avg": 0.9653,
+      "actual_rate": 0.9785
+    }
+  ],
+  "calibration_market": [
+    {
+      "bucket": "0-10%",
+      "n": 6066,
+      "predicted_avg": 0.0405,
+      "actual_rate": 0.0565
+    },
+    {
+      "bucket": "10-20%",
+      "n": 3921,
+      "predicted_avg": 0.1502,
+      "actual_rate": 0.1594
+    },
+    {
+      "bucket": "20-30%",
+      "n": 5067,
+      "predicted_avg": 0.2498,
+      "actual_rate": 0.2619
+    },
+    {
+      "bucket": "30-40%",
+      "n": 5973,
+      "predicted_avg": 0.3509,
+      "actual_rate": 0.3504
+    },
+    {
+      "bucket": "40-50%",
+      "n": 6408,
+      "predicted_avg": 0.4504,
+      "actual_rate": 0.4505
+    },
+    {
+      "bucket": "50-60%",
+      "n": 5832,
+      "predicted_avg": 0.5493,
+      "actual_rate": 0.613
+    },
+    {
+      "bucket": "60-70%",
+      "n": 5040,
+      "predicted_avg": 0.6486,
+      "actual_rate": 0.696
+    },
+    {
+      "bucket": "70-80%",
+      "n": 4740,
+      "predicted_avg": 0.7488,
+      "actual_rate": 0.7821
+    },
+    {
+      "bucket": "80-90%",
+      "n": 4326,
+      "predicted_avg": 0.8499,
+      "actual_rate": 0.9112
+    },
+    {
+      "bucket": "90-100%",
+      "n": 10006,
+      "predicted_avg": 0.9727,
+      "actual_rate": 0.9833
+    }
+  ],
+  "mismatch_vs_market": [
+    {
+      "abs_edge_range": "0%-2%",
+      "n": 13266,
+      "model_accuracy": 0.9232,
+      "market_accuracy": 0.9223
+    },
+    {
+      "abs_edge_range": "2%-5%",
+      "n": 11424,
+      "model_accuracy": 0.8516,
+      "market_accuracy": 0.851
+    },
+    {
+      "abs_edge_range": "5%-10%",
+      "n": 12849,
+      "model_accuracy": 0.7713,
+      "market_accuracy": 0.7534
+    },
+    {
+      "abs_edge_range": "10%-20%",
+      "n": 12835,
+      "model_accuracy": 0.7462,
+      "market_accuracy": 0.6999
+    },
+    {
+      "abs_edge_range": ">= 20%",
+      "n": 7005,
+      "model_accuracy": 0.7665,
+      "market_accuracy": 0.5867
+    }
+  ],
+  "model_path": "C:\\Users\\Siddh\\OneDrive\\Desktop\\kalshi-bot\\backend\\btcmarket\\artifacts\\kxbtc15m_xgb.json"
+}

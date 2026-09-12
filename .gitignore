@@ -47,6 +47,7 @@ frontend/build/
 # Logs
 *.log
 logs/
+server.out
 
 # Cache
 .cache/

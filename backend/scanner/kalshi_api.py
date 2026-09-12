@@ -56,8 +56,10 @@ class KalshiScannerAPI:
         status: Optional[str] = None,
         cursor: Optional[str] = None,
         limit: int = 200,
+        min_close_ts: Optional[int] = None,
+        max_close_ts: Optional[int] = None,
     ) -> dict:
-        """GET /markets — list markets, optionally filtered by series/event/status."""
+        """GET /markets — list markets, optionally filtered by series/event/status/close-time range."""
         params: Dict[str, Any] = {"limit": limit}
         if series_ticker:
             params["series_ticker"] = series_ticker
@@ -67,7 +69,26 @@ class KalshiScannerAPI:
             params["status"] = status
         if cursor:
             params["cursor"] = cursor
+        if min_close_ts is not None:
+            params["min_close_ts"] = min_close_ts
+        if max_close_ts is not None:
+            params["max_close_ts"] = max_close_ts
         return await self._client.get("/markets", params=params)
+
+    async def get_market_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        *,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 1,
+    ) -> dict:
+        """GET /series/{series_ticker}/markets/{ticker}/candlesticks — real historical OHLC for one market's yes/no price + orderbook."""
+        params = {"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_interval}
+        return await self._client.get(
+            f"/series/{series_ticker}/markets/{ticker}/candlesticks", params=params
+        )
 
     async def get_market(self, ticker: str, *, use_cache: bool = True) -> Optional[dict]:
         """GET /markets/{ticker} — single market's metadata (title, series_ticker, event_ticker, prices)."""
