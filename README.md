@@ -1,6 +1,6 @@
-# Kalshi Quant Trading Bot
+# Kalshi Trading Bot
 
-A research-grade quantitative trading system for [Kalshi](https://kalshi.com) prediction markets. Its primary focus is **KXBTC15M** — Kalshi's 15-minute Bitcoin up/down binary markets — priced with a closed-form volatility model *and* a trained gradient-boosted classifier, walk-forward validated and probability-calibrated before a single dollar (paper or real) ever touches it. It also ships a Kalshi-wide **whale trade scanner** and a legacy **weather temperature strategy** (Kalshi KXHIGH + ensemble forecasting), all surfaced through a live terminal-style React dashboard.
+A trading bot for [Kalshi](https://kalshi.com) prediction markets. Its main focus is **KXBTC15M** — Kalshi's 15-minute Bitcoin up/down binary markets — priced with a closed-form volatility model *and* a trained gradient-boosted classifier, walk-forward validated and probability-calibrated before a single dollar (paper or real) ever touches it. It also includes a Kalshi-wide **whale trade scanner** and a legacy **weather temperature strategy** (Kalshi KXHIGH + ensemble forecasting), all surfaced through a live terminal-style React dashboard.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688) ![React](https://img.shields.io/badge/react-18-61DAFB) ![TypeScript](https://img.shields.io/badge/typescript-5.3-blue) ![XGBoost](https://img.shields.io/badge/xgboost-2.1-EB6432) ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -24,8 +24,8 @@ A research-grade quantitative trading system for [Kalshi](https://kalshi.com) pr
 ## Who This Is For
 
 - **Quant / ML practitioners** who want a real, working example of pricing a short-horizon binary option with both a closed-form baseline (GBM) and a trained classifier — including walk-forward CV, probability calibration, and a train/serve parity safety net, not just a toy notebook.
-- **Kalshi API users** who want a battle-tested reference for RSA-PSS request signing, rate-limit backoff, orderbook depth fetching, and realistic (volume-weighted) fill simulation against real order books.
-- **Systematic traders** evaluating whether a market has genuine edge before risking capital — the whole pipeline is built to paper-trade first, log its reasoning for every decision, and self-report calibration (Brier score with confidence intervals) rather than assume a backtest number.
+- **Kalshi API users** who want a working reference for RSA-PSS request signing, rate-limit backoff, orderbook depth fetching, and realistic (volume-weighted) fill simulation against real order books.
+- **Systematic traders** who want to check whether a market has real edge before risking capital — the whole pipeline paper-trades first, logs its reasoning for every decision, and reports calibration (Brier score with confidence intervals) rather than assuming a backtest number.
 - **Anyone curious how a 15-minute crypto prediction market actually behaves** — the dashboard visualizes live order flow, model-vs-market probability, and settlement outcomes in real time.
 
 ## Key Features
